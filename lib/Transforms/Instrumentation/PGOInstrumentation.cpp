@@ -1224,9 +1224,9 @@ void PGOUseFunc::annotateIrrLoopHeaderWeights() {
 void SelectInstVisitor::instrumentOneSelectInst(SelectInst &SI) {
   Module *M = F.getParent();
   IRBuilder<> Builder(&SI);
-  Type *Int64Ty = Builder.getInt64Ty();
+  Type *Int32Ty = Builder.getInt32Ty();
   Type *I8PtrTy = Builder.getInt8PtrTy();
-  auto *Step = Builder.CreateZExt(SI.getCondition(), Int64Ty);
+  auto *Step = Builder.CreateZExt(SI.getCondition(), Int32Ty);
   Builder.CreateCall(
       Intrinsic::getDeclaration(M, Intrinsic::instrprof_increment_step),
       {ConstantExpr::getBitCast(FuncNameVar, I8PtrTy),

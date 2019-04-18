@@ -99,7 +99,7 @@ Value *InstrProfIncrementInst::getStep() const {
   }
   const Module *M = getModule();
   LLVMContext &Context = M->getContext();
-  return ConstantInt::get(Type::getInt64Ty(Context), 1);
+  return ConstantInt::get(Type::getInt32Ty(Context), 1);
 }
 
 ConstrainedFPIntrinsic::RoundingMode
@@ -167,4 +167,3 @@ bool ConstrainedFPIntrinsic::isTernaryOp() const {
       return true;
   }
 }
-
