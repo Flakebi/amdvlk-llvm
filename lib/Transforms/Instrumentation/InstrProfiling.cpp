@@ -502,9 +502,9 @@ bool InstrProfiling::run(Module &M, const TargetLibraryInfo &TLI) {
 
   emitVNodes();
   emitNameData();
-  //emitRegistration();
+  emitRegistration();
   emitUses();
-  //emitInitialization();
+  emitInitialization();
   return true;
 }
 
@@ -729,7 +729,7 @@ InstrProfiling::getOrCreateRegionCounters(InstrProfIncrementInst *Inc) {
 
   uint64_t NumCounters = Inc->getNumCounters()->getZExtValue();
   LLVMContext &Ctx = M->getContext();
-  ArrayType *CounterTy = ArrayType::get(Type::getInt32Ty(Ctx), NumCounters);
+  ArrayType *CounterTy = ArrayType::get(Type::getInt64Ty(Ctx), NumCounters);
 
   // Create the counters variable.
   auto *CounterPtr =
@@ -934,9 +934,6 @@ bool InstrProfiling::emitRuntimeHook() {
   // If the module's provided its own runtime, we don't need to do anything.
   if (M->getGlobalVariable(getInstrProfRuntimeHookVarName()))
     return false;
-
-  // We don't want that, it gives us symbol that we would have to link
-  return false;
 
   // Declare an external variable that will pull in the runtime initialization.
   auto *Int32Ty = Type::getInt32Ty(M->getContext());

@@ -14,8 +14,6 @@
 #ifndef LLVM_TRANSFORMS_IPO_PASSMANAGERBUILDER_H
 #define LLVM_TRANSFORMS_IPO_PASSMANAGERBUILDER_H
 
-#include "llvm/Transforms/Instrumentation.h"
-
 #include <functional>
 #include <memory>
 #include <string>
@@ -167,8 +165,6 @@ public:
   std::string PGOInstrUse;
   /// Path of the sample Profile data file.
   std::string PGOSampleUse;
-  /// PGO configuration. Some parameters will be overwritten.
-  InstrProfOptions PGOOptions;
 
 private:
   /// ExtensionList - This is list of all of the extensions that are registered.
