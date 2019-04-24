@@ -294,12 +294,11 @@ void PassManagerBuilder::addPGOInstrPasses(legacy::PassManagerBase &MPM) {
   if (EnablePGOInstrGen) {
     MPM.add(createPGOInstrumentationGenLegacyPass());
     // Add the profile lowering pass.
-    InstrProfOptions Options;
     if (!PGOInstrGen.empty())
-      Options.InstrProfileOutput = PGOInstrGen;
-    Options.DoCounterPromotion = true;
+      PGOOptions.InstrProfileOutput = PGOInstrGen;
+    PGOOptions.DoCounterPromotion = true;
     MPM.add(createLoopRotatePass());
-    MPM.add(createInstrProfilingLegacyPass(Options));
+    MPM.add(createInstrProfilingLegacyPass(PGOOptions));
   }
   if (!PGOInstrUse.empty())
     MPM.add(createPGOInstrumentationUseLegacyPass(PGOInstrUse));
