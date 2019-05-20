@@ -1313,6 +1313,20 @@ static bool hasAtLeastTwoBiasedBranches(CHRScope *Scope) {
   return NumBiased >= CHRMergeThreshold;
 }
 
+static bool hasConvergentIntrinsics(CHRScope *Scope) {
+  for (RegInfo &RI : Scope->RegInfos)
+    for (BasicBlock *BB : RI.R->blocks()) { // This includes the blocks in the
+                                            // sub-Scopes.
+      for (Instruction &I : *BB) {
+        if (auto *CI = dyn_cast<CallInst>(&I)) {
+          if (CI->isConvergent())
+            return true;
+        }
+      }
+    }
+  return false;
+}
+
 void CHR::filterScopes(SmallVectorImpl<CHRScope *> &Input,
                        SmallVectorImpl<CHRScope *> &Output) {
   for (CHRScope *Scope : Input) {
@@ -1331,6 +1345,22 @@ void CHR::filterScopes(SmallVectorImpl<CHRScope *> &Input,
             << "Drop scope with < "
             << ore::NV("CHRMergeThreshold", CHRMergeThreshold)
             << " biased branch(es) or select(s)";
+      });
+      continue;
+    }
+    // Filter out scopes with convergent intrinsics.
+    if (hasConvergentIntrinsics(Scope)) {
+      CHR_DEBUG(dbgs() << "Filtered out by convergent intrinsics "
+                << Scope->TrueBiasedRegions.size()
+                << " falsy-regions " << Scope->FalseBiasedRegions.size()
+                << " true-selects " << Scope->TrueBiasedSelects.size()
+                << " false-selects " << Scope->FalseBiasedSelects.size() << "\n");
+      ORE.emit([&]() {
+        return OptimizationRemarkMissed(
+            DEBUG_TYPE,
+            "DropScopeWithIntrConvergent",
+            Scope->RegInfos[0].R->getEntry()->getTerminator())
+            << "Drop scope with convergent intrinsics";
       });
       continue;
     }
@@ -1975,7 +2005,7 @@ bool CHR::run() {
     findScopes(AllScopes);
     CHR_DEBUG(dumpScopes(AllScopes, "All scopes"));
 
-    // Split the scopes if 1) the conditiona values of the biased
+    // Split the scopes if 1) the conditional values of the biased
     // branches/selects of the inner/lower scope can't be hoisted up to the
     // outermost/uppermost scope entry, or 2) the condition values of the biased
     // branches/selects in a scope (including subscopes) don't share at least
@@ -1991,6 +2021,8 @@ bool CHR::run() {
 
     // Filter out the scopes that has only one biased region or select (CHR
     // isn't useful in such a case).
+    // Also filter out regions that contain convergent intrinsics, we cannot
+    // duplicate them.
     SmallVector<CHRScope *, 8> FilteredScopes;
     filterScopes(SplitScopes, FilteredScopes);
     CHR_DEBUG(dumpScopes(FilteredScopes, "Filtered scopes"));

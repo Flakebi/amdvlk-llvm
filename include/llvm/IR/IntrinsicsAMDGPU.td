@@ -1123,7 +1123,7 @@ def int_amdgcn_exp : Intrinsic <[], [
   llvm_i1_ty,        // done
   llvm_i1_ty         // vm
   ],
-  []
+  [IntrConvergent]
 >;
 
 // exp with compr bit set.
@@ -1134,7 +1134,7 @@ def int_amdgcn_exp_compr : Intrinsic <[], [
   LLVMMatchType<0>,  // src1
   llvm_i1_ty,        // done
   llvm_i1_ty],       // vm
-  []
+  [IntrConvergent]
 >;
 
 def int_amdgcn_buffer_wbinvl1_sc :
