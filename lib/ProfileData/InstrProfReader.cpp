@@ -858,6 +858,7 @@ IndexedInstrProfReader::getInstrProfRecord(StringRef FuncName,
   // Found it. Look for counters with the right hash.
   for (unsigned I = 0, E = Data.size(); I < E; ++I) {
     // Check for a match and fill the vector if there is one.
+    printf("Hash 0x%016lX == 0x%016lX\n", Data[I].Hash, FuncHash);
     if (Data[I].Hash == FuncHash) {
       return std::move(Data[I]);
     }

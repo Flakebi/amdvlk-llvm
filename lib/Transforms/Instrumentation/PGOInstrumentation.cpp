@@ -727,6 +727,7 @@ static void instrumentOneFunc(
   FuncPGOInstrumentation<PGOEdge, BBInfo> FuncInfo(F, ComdatMembers, true, BPI,
                                                    BFI);
   unsigned NumCounters = FuncInfo.getNumCounters();
+  printf("%u counter\n", NumCounters);
 
   uint32_t I = 0;
   Type *I8PtrTy = Type::getInt8PtrTy(M->getContext());
@@ -961,6 +962,8 @@ private:
 // edges and the BB.
 void PGOUseFunc::setInstrumentedCounts(
     const std::vector<uint64_t> &CountFromProfile) {
+  printf("%u counter\n", FuncInfo.getNumCounters());
+  printf("%u profile counters\n", CountFromProfile.size());
   assert(FuncInfo.getNumCounters() == CountFromProfile.size());
   // Use a worklist as we will update the vector during the iteration.
   std::vector<PGOUseEdge *> WorkList;

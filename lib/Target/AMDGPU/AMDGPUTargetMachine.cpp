@@ -27,6 +27,7 @@
 #include "GCNSchedStrategy.h"
 #include "R600MachineScheduler.h"
 #include "SIMachineScheduler.h"
+#include "llvm/Analysis/InlineCost.h"
 #include "llvm/CodeGen/GlobalISel/IRTranslator.h"
 #include "llvm/CodeGen/GlobalISel/InstructionSelect.h"
 #include "llvm/CodeGen/GlobalISel/Legalizer.h"
@@ -41,6 +42,7 @@
 #include "llvm/Support/Compiler.h"
 #include "llvm/Support/TargetRegistry.h"
 #include "llvm/Target/TargetLoweringObjectFile.h"
+#include "llvm/Transforms/InstCombine/InstCombine.h"
 #include "llvm/Transforms/IPO.h"
 #include "llvm/Transforms/IPO/AlwaysInliner.h"
 #include "llvm/Transforms/IPO/PassManagerBuilder.h"
@@ -764,6 +766,7 @@ ScheduleDAGInstrs *GCNPassConfig::createMachineScheduler(
   return createGCNMaxOccupancyMachineScheduler(C);
 }
 
+thread_local std::string profileUseFilenameString;
 bool GCNPassConfig::addPreISel() {
   AMDGPUPassConfig::addPreISel();
 
@@ -785,6 +788,50 @@ bool GCNPassConfig::addPreISel() {
   addPass(createAMDGPUAnnotateUniformValues());
   if (!LateCFGStructurize) {
     addPass(createSIAnnotateControlFlowPass());
+
+    // Add PGO passes after structurizing the CFG
+    const char* profileGenFilename = getenv("AMDVLK_PROFILE_INSTR_GEN");
+
+    /*if (profileGenFilename || !profileUseFilenameString.empty())
+    {
+      // Create preinline pass. We construct an InlineParams object and specify
+      // the threshold here to avoid the command line options of the regular
+      // inliner to influence pre-inlining. The only fields of InlineParams we
+      // care about are DefaultThreshold and HintThreshold.
+      InlineParams IP;
+      IP.DefaultThreshold = 75;
+      // FIXME: The hint threshold has the same value used by the regular inliner.
+      // This should probably be lowered after performance testing.
+      IP.HintThreshold = 325;
+
+      addPass(createFunctionInliningPass(IP));
+      addPass(createSROAPass());
+      addPass(createEarlyCSEPass());             // Catch trivial redundancies
+      addPass(createCFGSimplificationPass());    // Merge & remove BBs
+      addPass(createInstructionCombiningPass()); // Combine silly seq's
+    }*/
+
+    if (profileGenFilename)
+    {
+      InstrProfOptions PGOOptions;
+      PGOOptions.InstrProfileOutput = profileGenFilename;
+      PGOOptions.Atomic = true;
+      PGOOptions.DoCounterPromotion = true;
+
+      addPass(createPGOInstrumentationGenLegacyPass());
+      addPass(createLoopRotatePass());
+      addPass(createInstrProfilingLegacyPass(PGOOptions));
+    }
+
+    if (!profileUseFilenameString.empty())
+    {
+      printf("Using pgo with %s\n", profileUseFilenameString.c_str());
+      // Use file
+      // The filename gets converted to a std::string so we can use the
+      // stack allocated variable.
+      addPass(createPGOInstrumentationUseLegacyPass(profileUseFilenameString));
+      addPass(createControlHeightReductionLegacyPass());
+    }
   }
 
   return false;
