@@ -825,7 +825,6 @@ bool GCNPassConfig::addPreISel() {
 
     if (!profileUseFilenameString.empty())
     {
-      printf("Using pgo with %s\n", profileUseFilenameString.c_str());
       // Use file
       // The filename gets converted to a std::string so we can use the
       // stack allocated variable.
