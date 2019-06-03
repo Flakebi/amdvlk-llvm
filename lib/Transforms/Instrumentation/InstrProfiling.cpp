@@ -378,18 +378,29 @@ static InstrProfIncrementInst *castToIncrementInst(Instruction *Instr) {
 bool InstrProfiling::lowerIntrinsics(Function *F) {
   bool MadeChange = false;
   PromotionCandidates.clear();
+  std::vector<InstrProfIncrementInst*> incs;
+  std::vector<InstrProfValueProfileInst*> valIncs;
+
   for (BasicBlock &BB : *F) {
     for (auto I = BB.begin(), E = BB.end(); I != E;) {
       auto Instr = I++;
       InstrProfIncrementInst *Inc = castToIncrementInst(&*Instr);
       if (Inc) {
-        lowerIncrement(Inc);
-        MadeChange = true;
+        incs.push_back(Inc);
       } else if (auto *Ind = dyn_cast<InstrProfValueProfileInst>(Instr)) {
-        lowerValueProfileInst(Ind);
-        MadeChange = true;
+        valIncs.push_back(Ind);
       }
     }
+  }
+
+  for (InstrProfIncrementInst *Inc : incs) {
+    lowerIncrement(Inc);
+    MadeChange = true;
+  }
+
+  for (InstrProfValueProfileInst *Ind : valIncs) {
+    lowerValueProfileInst(Ind);
+    MadeChange = true;
   }
 
   if (!MadeChange)
@@ -603,8 +614,33 @@ void InstrProfiling::lowerIncrement(InstrProfIncrementInst *Inc) {
   Value *Addr = Builder.CreateConstInBoundsGEP2_64(Counters, 0, Index);
 
   if (Options.Atomic || AtomicCounterUpdateAll) {
-    Builder.CreateAtomicRMW(AtomicRMWInst::Add, Addr, Inc->getStep(),
-                            AtomicOrdering::Monotonic);
+    // We need to know how many lanes are active within the wavefront, and we do
+    // this by doing a ballot of active lanes.
+    IRBuilder<> B(Inc);
+    LLVMContext &Ctx = M->getContext();
+    auto *Int64Ty = Type::getInt64Ty(Ctx);
+
+    Value *ReadR = Intrinsic::getDeclaration(
+        M, Intrinsic::read_register, Int64Ty);
+    Value *WriteR = Intrinsic::getDeclaration(
+        M, Intrinsic::write_register, Int64Ty);
+    Metadata *MDArgs[] = {MDString::get(Ctx, "exec")};
+    MDNode *MD = MDNode::get(Ctx, MDArgs);
+
+    CallInst *ReadCall = Builder.CreateCall(ReadR, {MetadataAsValue::get(Ctx, MD)});
+    ReadCall->addAttribute(AttributeList::FunctionIndex,
+                          Attribute::Convergent);
+    ConstantInt *one = ConstantInt::get(Int64Ty, 1);
+    CallInst *NewCall = Builder.CreateCall(WriteR, {MetadataAsValue::get(Ctx, MD), one});
+    NewCall->addAttribute(AttributeList::FunctionIndex,
+                          Attribute::Convergent);
+
+    B.CreateAtomicRMW(AtomicRMWInst::Add, Addr, Inc->getStep(),
+                      AtomicOrdering::Monotonic);
+
+    NewCall = Builder.CreateCall(WriteR, {MetadataAsValue::get(Ctx, MD), ReadCall});
+    NewCall->addAttribute(AttributeList::FunctionIndex,
+                          Attribute::Convergent);
   } else {
     Value *Load = Builder.CreateLoad(Addr, "pgocount");
     auto *Count = Builder.CreateAdd(Load, Inc->getStep());

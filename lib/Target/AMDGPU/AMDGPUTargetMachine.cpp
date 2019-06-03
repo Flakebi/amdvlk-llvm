@@ -783,11 +783,17 @@ bool GCNPassConfig::addPreISel() {
   addPass(&AMDGPUUnifyDivergentExitNodesID);
   if (!LateCFGStructurize) {
     addPass(createStructurizeCFGPass(true)); // true -> SkipUniformRegions
+    /*addPass(createPrinterPass(outs(),
+                "===============================================================================\n"
+                "// After structurize\n"));*/
   }
   addPass(createSinkingPass());
   addPass(createAMDGPUAnnotateUniformValues());
   if (!LateCFGStructurize) {
     addPass(createSIAnnotateControlFlowPass());
+    /*addPass(createPrinterPass(outs(),
+                "===============================================================================\n"
+                "// After annotate\n"));*/
 
     // Add PGO passes after structurizing the CFG
     const char* profileGenFilename = getenv("AMDVLK_PROFILE_INSTR_GEN");
@@ -831,6 +837,9 @@ bool GCNPassConfig::addPreISel() {
       addPass(createPGOInstrumentationUseLegacyPass(profileUseFilenameString));
       addPass(createControlHeightReductionLegacyPass());
     }
+    /*addPass(createPrinterPass(outs(),
+                "===============================================================================\n"
+                "// After PGO\n"));*/
   }
 
   return false;
