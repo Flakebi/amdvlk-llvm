@@ -43,6 +43,7 @@
 #include "llvm/Support/TargetRegistry.h"
 #include "llvm/Target/TargetLoweringObjectFile.h"
 #include "llvm/Transforms/InstCombine/InstCombine.h"
+#include "llvm/Transforms/Instrumentation/PGOInstrumentation.h"
 #include "llvm/Transforms/IPO.h"
 #include "llvm/Transforms/IPO/AlwaysInliner.h"
 #include "llvm/Transforms/IPO/PassManagerBuilder.h"
@@ -796,55 +797,41 @@ bool GCNPassConfig::addPreISel() {
                 "===============================================================================\n"
                 "// After annotate\n"));*/
 
-    // Add PGO passes after structurizing the CFG
-    const char* profileGenFilename = getenv("AMDVLK_PROFILE_INSTR_GEN");
-    std::ofstream outfile;
-    outfile.open("/tmp/mydriveroutput.txt", std::ios_base::app);
-    outfile << "Compiling ";
-
-    /*if (profileGenFilename || !profileUseFilenameString.empty())
+    AMDGPUPGOOptions pgoOpts;
+    if (pgoOpts.Late)
     {
-      // Create preinline pass. We construct an InlineParams object and specify
-      // the threshold here to avoid the command line options of the regular
-      // inliner to influence pre-inlining. The only fields of InlineParams we
-      // care about are DefaultThreshold and HintThreshold.
-      InlineParams IP;
-      IP.DefaultThreshold = 75;
-      // FIXME: The hint threshold has the same value used by the regular inliner.
-      // This should probably be lowered after performance testing.
-      IP.HintThreshold = 325;
+      // Add PGO passes after structurizing the CFG
+      std::ofstream outfile;
+      outfile.open("/tmp/mydriveroutput.txt", std::ios_base::app);
+      outfile << "Compiling ";
 
-      addPass(createFunctionInliningPass(IP));
-      addPass(createSROAPass());
-      addPass(createEarlyCSEPass());             // Catch trivial redundancies
-      addPass(createCFGSimplificationPass());    // Merge & remove BBs
-      addPass(createInstructionCombiningPass()); // Combine silly seq's
-    }*/
+      if (pgoOpts.Gen())
+      {
+        outfile << pgoOpts.FileGen;
+        InstrProfOptions PGOOptions;
+        PGOOptions.InstrProfileOutput = pgoOpts.FileGen;
+        PGOOptions.Atomic = true;
+        PGOOptions.DoCounterPromotion = true;
 
-    if (profileGenFilename)
-    {
-      outfile << profileGenFilename;
-      InstrProfOptions PGOOptions;
-      PGOOptions.InstrProfileOutput = profileGenFilename;
-      PGOOptions.Atomic = true;
-      PGOOptions.DoCounterPromotion = true;
+        addPass(createPGOInstrumentationGenLegacyPass());
+        addPass(createLoopRotatePass());
+        addPass(createInstrProfilingLegacyPass(PGOOptions));
+      }
 
-      addPass(createPGOInstrumentationGenLegacyPass());
-      addPass(createLoopRotatePass());
-      addPass(createInstrProfilingLegacyPass(PGOOptions));
+      if (!profileUseFilenameString.empty())
+      {
+        outfile << " " << profileUseFilenameString;
+        // Use file
+        // The filename gets converted to a std::string so we can use the
+        // stack allocated variable.
+        addPass(createPGOInstrumentationUseLegacyPass(profileUseFilenameString));
+        if (pgoOpts.Analysis)
+          addPass(createPGOInstrumentationAnalysisLegacyPass());
+        addPass(createControlHeightReductionLegacyPass());
+      }
+      outfile << "\n";
     }
 
-    if (!profileUseFilenameString.empty())
-    {
-      outfile << " " << profileUseFilenameString;
-      // Use file
-      // The filename gets converted to a std::string so we can use the
-      // stack allocated variable.
-      addPass(createPGOInstrumentationUseLegacyPass(profileUseFilenameString));
-      addPass(createPGOInstrumentationAnalysisLegacyPass());
-      addPass(createControlHeightReductionLegacyPass());
-    }
-    outfile << "\n";
     /*addPass(createPrinterPass(outs(),
                 "===============================================================================\n"
                 "// After PGO\n"));*/

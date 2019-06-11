@@ -443,6 +443,47 @@ private:
   }
 };
 
+class PGOUniformInstrumentationGenLegacyPass : public ModulePass {
+public:
+  static char ID;
+
+  PGOUniformInstrumentationGenLegacyPass() : ModulePass(ID) {
+    initializePGOUniformInstrumentationGenLegacyPassPass(
+        *PassRegistry::getPassRegistry());
+  }
+
+  StringRef getPassName() const override { return "PGOUniformInstrumentationGenPass"; }
+
+private:
+  bool runOnModule(Module &M) override;
+
+  void getAnalysisUsage(AnalysisUsage &AU) const override {
+    AU.addRequired<BlockFrequencyInfoWrapperPass>();
+  }
+};
+
+class PGOUniformInstrumentationUseLegacyPass : public ModulePass {
+public:
+  static char ID;
+
+  PGOUniformInstrumentationUseLegacyPass(std::string filename = "") : ModulePass(ID) {
+    Filename = filename;
+    initializePGOUniformInstrumentationUseLegacyPassPass(
+        *PassRegistry::getPassRegistry());
+  }
+
+  StringRef getPassName() const override { return "PGOUniformInstrumentationUsePass"; }
+
+private:
+  std::string Filename;
+
+  bool runOnModule(Module &M) override;
+
+  void getAnalysisUsage(AnalysisUsage &AU) const override {
+    AU.addRequired<BlockFrequencyInfoWrapperPass>();
+  }
+};
+
 } // end anonymous namespace
 
 char PGOInstrumentationGenLegacyPass::ID = 0;
@@ -469,6 +510,32 @@ INITIALIZE_PASS_END(PGOInstrumentationAnalysisLegacyPass, "pgo-instr-ana",
 
 ModulePass *llvm::createPGOInstrumentationAnalysisLegacyPass() {
   return new PGOInstrumentationAnalysisLegacyPass();
+}
+
+char PGOUniformInstrumentationGenLegacyPass::ID = 0;
+
+INITIALIZE_PASS_BEGIN(PGOUniformInstrumentationGenLegacyPass, "pgo-instr-ana",
+                      "PGO instrumentation.", false, false)
+INITIALIZE_PASS_DEPENDENCY(BlockFrequencyInfoWrapperPass)
+INITIALIZE_PASS_DEPENDENCY(BranchProbabilityInfoWrapperPass)
+INITIALIZE_PASS_END(PGOUniformInstrumentationGenLegacyPass, "pgo-instr-ana",
+                    "PGO instrumentation.", false, false)
+
+ModulePass *llvm::createPGOUniformInstrumentationGenLegacyPass() {
+  return new PGOUniformInstrumentationGenLegacyPass();
+}
+
+char PGOUniformInstrumentationUseLegacyPass::ID = 0;
+
+INITIALIZE_PASS_BEGIN(PGOUniformInstrumentationUseLegacyPass, "pgo-instr-ana",
+                      "PGO instrumentation.", false, false)
+INITIALIZE_PASS_DEPENDENCY(BlockFrequencyInfoWrapperPass)
+INITIALIZE_PASS_DEPENDENCY(BranchProbabilityInfoWrapperPass)
+INITIALIZE_PASS_END(PGOUniformInstrumentationUseLegacyPass, "pgo-instr-ana",
+                    "PGO instrumentation.", false, false)
+
+ModulePass *llvm::createPGOUniformInstrumentationUseLegacyPass(std::string filename) {
+  return new PGOUniformInstrumentationUseLegacyPass(filename);
 }
 
 char PGOInstrumentationUseLegacyPass::ID = 0;
@@ -1459,7 +1526,8 @@ bool PGOInstrumentationAnalysisLegacyPass::runOnModule(Module &M) {
         }
       }
 
-      BranchInst *Term = dyn_cast<BranchInst>(BB->getTerminator());
+      // TODO
+      BranchInst *Term = dyn_cast<BranchInst>(BB.getTerminator());
 
       if (!Term || Term->isUnconditional()) {
         continue;
@@ -1484,6 +1552,32 @@ PreservedAnalyses PGOInstrumentationAnalysis::run(Module &M,
   // TODO
   //if (!InstrumentAllFunctions(M, LookupBPI, LookupBFI))
   printf("Unimplemented\n");
+  return PreservedAnalyses::all();
+}
+
+bool PGOUniformInstrumentationGenLegacyPass::runOnModule(Module &M) {
+  if (skipModule(M))
+    return false;
+
+  return false;
+}
+
+PreservedAnalyses PGOUniformInstrumentationGen::run(Module &M,
+                                             ModuleAnalysisManager &AM) {
+  auto &FAM = AM.getResult<FunctionAnalysisManagerModuleProxy>(M).getManager();
+  return PreservedAnalyses::all();
+}
+
+bool PGOUniformInstrumentationUseLegacyPass::runOnModule(Module &M) {
+  if (skipModule(M))
+    return false;
+
+  return false;
+}
+
+PreservedAnalyses PGOUniformInstrumentationUse::run(Module &M,
+                                             ModuleAnalysisManager &AM) {
+  auto &FAM = AM.getResult<FunctionAnalysisManagerModuleProxy>(M).getManager();
   return PreservedAnalyses::all();
 }
 
@@ -1793,5 +1887,82 @@ template <> struct DOTGraphTraits<PGOUseFunc *> : DefaultDOTGraphTraits {
     return Result;
   }
 };
+
+AMDGPUPGOOptions::AMDGPUPGOOptions() {
+  const char* var = getenv("AMDVLK_PROFILE_PER_WAVE");
+  PerWave = var && var[0] != '0' && var[0] != 0;
+
+  var = getenv("AMDVLK_PROFILE_LATE");
+  Late = var && var[0] != '0' && var[0] != 0;
+
+  var = getenv("AMDVLK_PROFILE_ANALYSIS");
+  Analysis = var && var[0] != '0' && var[0] != 0;
+
+  var = getenv("AMDVLK_PROFILE_UNIFORM");
+  Uniform = var && var[0] != '0' && var[0] != 0;
+
+  var = getenv("AMDVLK_PROFILE_INSTR_GEN");
+  if (var) {
+    FileGen = var;
+    FileUniformGen = FileGen + "-u";
+  }
+
+  var = getenv("AMDVLK_PROFILE_INSTR_USE");
+  if (var) {
+    FileUse = var;
+    FileUniformUse = FileUse + "-u";
+  }
+}
+
+PGOUniformInstrumentationUse::PGOUniformInstrumentationUse(std::string file) {
+  Filename = file;
+}
+
+static std::string ReplacePipelineId(const char* src, uint64_t id) {
+  // Replace %i with pipeline id
+  bool isEscaped = false; // If the next character is escaped
+  char expandedFilename[512] = { };
+  size_t j = 0;
+  for (size_t i = 0; j < sizeof(expandedFilename) && src[i]; i++, j++)
+  {
+    if (isEscaped && src[i] == 'i')
+    {
+      j--;
+      int written = snprintf(expandedFilename + j,
+          sizeof(expandedFilename) - j,
+          "0x%016" PRIX64,
+          id);
+      if (written < 0)
+      {
+          printf("Failed to write pipeline hash\n");
+          return std::string();
+      }
+      j += written - 1;
+
+      continue;
+    }
+
+    expandedFilename[j] = src[i];
+    if (!isEscaped && src[i] == '%')
+      isEscaped = true;
+  }
+
+  if (j >= sizeof(expandedFilename))
+  {
+    printf("Failed to write pipeline hash\n");
+    return std::string();
+  }
+
+  expandedFilename[j] = 0;
+  return expandedFilename;
+}
+
+std::string AMDGPUPGOOptions::FileUseWithId(uint64_t id) const {
+  return ReplacePipelineId(FileUse.c_str(), id);
+}
+
+std::string AMDGPUPGOOptions::FileUniformUseWithId(uint64_t id) const {
+  return ReplacePipelineId(FileUniformUse.c_str(), id);
+}
 
 } // end namespace llvm

@@ -90,6 +90,8 @@ ModulePass *createGCOVProfilerPass(const GCOVOptions &Options =
 // PGO Instrumention
 ModulePass *createPGOInstrumentationGenLegacyPass();
 ModulePass *createPGOInstrumentationAnalysisLegacyPass();
+ModulePass *createPGOUniformInstrumentationGenLegacyPass();
+ModulePass *createPGOUniformInstrumentationUseLegacyPass(std::string filename);
 ModulePass *
 createPGOInstrumentationUseLegacyPass(StringRef Filename = StringRef(""));
 ModulePass *createPGOIndirectCallPromotionLegacyPass(bool InLTO = false,

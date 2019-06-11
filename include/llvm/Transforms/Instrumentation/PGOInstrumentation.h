@@ -26,6 +26,33 @@ class Function;
 class Instruction;
 class Module;
 
+class AMDGPUPGOOptions {
+public:
+  /// false = Counters are per SIMD-lane
+  /// true  = Counters are per SIMD-unit/wave
+  bool PerWave;
+  /// false = normal
+  /// true  = after structurize cfg
+  bool Late;
+  /// Add analyzation passes
+  bool Analysis;
+  /// Log if variables are dynamically uniform.
+  bool Uniform;
+
+  std::string FileGen;
+  std::string FileUse;
+  std::string FileUniformGen;
+  std::string FileUniformUse;
+
+  AMDGPUPGOOptions();
+
+  bool Gen() const { return !FileGen.empty(); }
+  bool Use() const { return !FileUse.empty(); }
+  // Replace %i with the pipeline id
+  std::string FileUseWithId(uint64_t id) const;
+  std::string FileUniformUseWithId(uint64_t id) const;
+};
+
 /// The instrumentation (profile-instr-gen) pass for IR based PGO.
 class PGOInstrumentationGen : public PassInfoMixin<PGOInstrumentationGen> {
 public:
@@ -43,6 +70,21 @@ public:
 private:
   std::string ProfileFileName;
   std::string ProfileRemappingFileName;
+};
+
+class PGOUniformInstrumentationGen : public PassInfoMixin<PGOUniformInstrumentationGen> {
+public:
+  PreservedAnalyses run(Module &M, ModuleAnalysisManager &AM);
+};
+
+class PGOUniformInstrumentationUse : public PassInfoMixin<PGOUniformInstrumentationUse> {
+public:
+  PGOUniformInstrumentationUse(std::string Filename);
+
+  PreservedAnalyses run(Module &M, ModuleAnalysisManager &AM);
+
+private:
+  std::string Filename;
 };
 
 class PGOInstrumentationAnalysis : public PassInfoMixin<PGOInstrumentationAnalysis> {

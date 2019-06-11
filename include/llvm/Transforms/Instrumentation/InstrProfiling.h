@@ -69,6 +69,7 @@ private:
   int64_t MemOPSizeRangeLast;
 
   int64_t TotalCountersPromoted = 0;
+  bool PerWave;
 
   /// Lower instrumentation intrinsics in the function. Returns true if there
   /// any lowering.

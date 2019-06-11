@@ -41,6 +41,7 @@
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/Error.h"
 #include "llvm/Support/ErrorHandling.h"
+#include "llvm/Transforms/Instrumentation/PGOInstrumentation.h"
 #include "llvm/Transforms/Utils/BasicBlockUtils.h"
 #include "llvm/Transforms/Utils/ModuleUtils.h"
 #include "llvm/Transforms/Utils/SSAUpdater.h"
@@ -469,6 +470,7 @@ bool InstrProfiling::run(Module &M, const TargetLibraryInfo &TLI) {
   NamesSize = 0;
   ProfileDataMap.clear();
   UsedVars.clear();
+  PerWave = AMDGPUPGOOptions().PerWave;
   getMemOPSizeRangeFromOption(MemOPSizeRange, MemOPSizeRangeStart,
                               MemOPSizeRangeLast);
   TT = Triple(M.getTargetTriple());
@@ -614,33 +616,46 @@ void InstrProfiling::lowerIncrement(InstrProfIncrementInst *Inc) {
   Value *Addr = Builder.CreateConstInBoundsGEP2_64(Counters, 0, Index);
 
   if (Options.Atomic || AtomicCounterUpdateAll) {
-    // We need to know how many lanes are active within the wavefront, and we do
-    // this by doing a ballot of active lanes.
-    IRBuilder<> B(Inc);
-    LLVMContext &Ctx = M->getContext();
-    auto *Int64Ty = Type::getInt64Ty(Ctx);
+    if (PerWave) {
+      LLVMContext &Ctx = M->getContext();
+      auto *Int64Ty = Type::getInt64Ty(Ctx);
 
-    Value *ReadR = Intrinsic::getDeclaration(
-        M, Intrinsic::read_register, Int64Ty);
-    Value *WriteR = Intrinsic::getDeclaration(
-        M, Intrinsic::write_register, Int64Ty);
-    Metadata *MDArgs[] = {MDString::get(Ctx, "exec")};
-    MDNode *MD = MDNode::get(Ctx, MDArgs);
+      Value *ReadR = Intrinsic::getDeclaration(
+          M, Intrinsic::read_register, Int64Ty);
+      Value *WriteR = Intrinsic::getDeclaration(
+          M, Intrinsic::amdgcn_init_exec, Int64Ty);
+      Metadata *MDArgs[] = {MDString::get(Ctx, "exec")};
+      MDNode *MD = MDNode::get(Ctx, MDArgs);
 
-    CallInst *ReadCall = Builder.CreateCall(ReadR, {MetadataAsValue::get(Ctx, MD)});
-    ReadCall->addAttribute(AttributeList::FunctionIndex,
-                          Attribute::Convergent);
-    ConstantInt *one = ConstantInt::get(Int64Ty, 1);
-    CallInst *NewCall = Builder.CreateCall(WriteR, {MetadataAsValue::get(Ctx, MD), one});
-    NewCall->addAttribute(AttributeList::FunctionIndex,
-                          Attribute::Convergent);
+      CallInst *ReadCall = Builder.CreateCall(ReadR, {MetadataAsValue::get(Ctx, MD)});
+      ReadCall->addAttribute(AttributeList::FunctionIndex,
+                            Attribute::Convergent);
 
-    B.CreateAtomicRMW(AtomicRMWInst::Add, Addr, Inc->getStep(),
-                      AtomicOrdering::Monotonic);
+      // Split after we read the register
+      auto it = ReadCall->getIterator();
+      it++;
+      auto* newBB = Inc->getParent()->splitBasicBlock(it);
+      IRBuilder<> Builder2(newBB);
+      ConstantInt *one = ConstantInt::get(Int64Ty, 1);
+      CallInst *NewCall = Builder2.CreateCall(WriteR, one);
+      NewCall->addAttribute(AttributeList::FunctionIndex,
+                            Attribute::Convergent);
 
-    NewCall = Builder.CreateCall(WriteR, {MetadataAsValue::get(Ctx, MD), ReadCall});
-    NewCall->addAttribute(AttributeList::FunctionIndex,
-                          Attribute::Convergent);
+      auto AtomicOp = Builder2.CreateAtomicRMW(AtomicRMWInst::Add, Addr, Inc->getStep(),
+        AtomicOrdering::Monotonic);
+
+      // Split after we made the atomic operation
+      it = AtomicOp->getIterator();
+      it++;
+      newBB = Inc->getParent()->splitBasicBlock(it);
+      IRBuilder<> Builder3(newBB);
+      NewCall = Builder3.CreateCall(WriteR, ReadCall);
+      NewCall->addAttribute(AttributeList::FunctionIndex,
+                            Attribute::Convergent);
+    } else {
+      Builder.CreateAtomicRMW(AtomicRMWInst::Add, Addr, Inc->getStep(),
+        AtomicOrdering::Monotonic);
+    }
   } else {
     Value *Load = Builder.CreateLoad(Addr, "pgocount");
     auto *Count = Builder.CreateAdd(Load, Inc->getStep());
