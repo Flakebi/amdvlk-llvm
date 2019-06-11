@@ -116,6 +116,7 @@
 #include <unordered_map>
 #include <utility>
 #include <vector>
+#include <fstream>
 
 using namespace llvm;
 using ProfileCount = Function::ProfileCount;
@@ -423,6 +424,25 @@ private:
   }
 };
 
+class PGOInstrumentationAnalysisLegacyPass : public ModulePass {
+public:
+  static char ID;
+
+  PGOInstrumentationAnalysisLegacyPass() : ModulePass(ID) {
+    initializePGOInstrumentationAnalysisLegacyPassPass(
+        *PassRegistry::getPassRegistry());
+  }
+
+  StringRef getPassName() const override { return "PGOInstrumentationAnalysisPass"; }
+
+private:
+  bool runOnModule(Module &M) override;
+
+  void getAnalysisUsage(AnalysisUsage &AU) const override {
+    AU.addRequired<BlockFrequencyInfoWrapperPass>();
+  }
+};
+
 } // end anonymous namespace
 
 char PGOInstrumentationGenLegacyPass::ID = 0;
@@ -436,6 +456,19 @@ INITIALIZE_PASS_END(PGOInstrumentationGenLegacyPass, "pgo-instr-gen",
 
 ModulePass *llvm::createPGOInstrumentationGenLegacyPass() {
   return new PGOInstrumentationGenLegacyPass();
+}
+
+char PGOInstrumentationAnalysisLegacyPass::ID = 0;
+
+INITIALIZE_PASS_BEGIN(PGOInstrumentationAnalysisLegacyPass, "pgo-instr-ana",
+                      "PGO instrumentation.", false, false)
+INITIALIZE_PASS_DEPENDENCY(BlockFrequencyInfoWrapperPass)
+INITIALIZE_PASS_DEPENDENCY(BranchProbabilityInfoWrapperPass)
+INITIALIZE_PASS_END(PGOInstrumentationAnalysisLegacyPass, "pgo-instr-ana",
+                    "PGO instrumentation.", false, false)
+
+ModulePass *llvm::createPGOInstrumentationAnalysisLegacyPass() {
+  return new PGOInstrumentationAnalysisLegacyPass();
 }
 
 char PGOInstrumentationUseLegacyPass::ID = 0;
@@ -1402,6 +1435,56 @@ static bool InstrumentAllFunctions(
     instrumentOneFunc(F, &M, BPI, BFI, ComdatMembers);
   }
   return true;
+}
+
+bool PGOInstrumentationAnalysisLegacyPass::runOnModule(Module &M) {
+  if (skipModule(M))
+    return false;
+
+  std::ofstream outfile;
+  outfile.open("/tmp/mydriveranalysis.txt", std::ios_base::app);
+  outfile << "Compiling\n";
+  for (auto &F : M) {
+    if (F.isDeclaration())
+      continue;
+    BlockFrequencyInfo &BFI =
+        getAnalysis<BlockFrequencyInfoWrapperPass>(F).getBFI();
+    for (auto &BB : F) {
+      Optional<uint64_t> ProfileCount = BFI.getBlockProfileCount(&BB);
+      if (ProfileCount) {
+        if (ProfileCount.getValue() == 0) {
+          outfile << "Count is 0\n";
+        } else {
+          outfile << "Count is " << ProfileCount.getValue() << "\n";
+        }
+      }
+
+      BranchInst *Term = dyn_cast<BranchInst>(BB->getTerminator());
+
+      if (!Term || Term->isUnconditional()) {
+        continue;
+      }
+    }
+  }
+
+  return false;
+}
+
+PreservedAnalyses PGOInstrumentationAnalysis::run(Module &M,
+                                             ModuleAnalysisManager &AM) {
+  auto &FAM = AM.getResult<FunctionAnalysisManagerModuleProxy>(M).getManager();
+  auto LookupBPI = [&FAM](Function &F) {
+    return &FAM.getResult<BranchProbabilityAnalysis>(F);
+  };
+
+  auto LookupBFI = [&FAM](Function &F) {
+    return &FAM.getResult<BlockFrequencyAnalysis>(F);
+  };
+
+  // TODO
+  //if (!InstrumentAllFunctions(M, LookupBPI, LookupBFI))
+  printf("Unimplemented\n");
+  return PreservedAnalyses::all();
 }
 
 bool PGOInstrumentationGenLegacyPass::runOnModule(Module &M) {

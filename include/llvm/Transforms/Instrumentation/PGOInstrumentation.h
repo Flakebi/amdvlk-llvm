@@ -45,6 +45,11 @@ private:
   std::string ProfileRemappingFileName;
 };
 
+class PGOInstrumentationAnalysis : public PassInfoMixin<PGOInstrumentationAnalysis> {
+public:
+  PreservedAnalyses run(Module &M, ModuleAnalysisManager &AM);
+};
+
 /// The indirect function call promotion pass.
 class PGOIndirectCallPromotion : public PassInfoMixin<PGOIndirectCallPromotion> {
 public:
