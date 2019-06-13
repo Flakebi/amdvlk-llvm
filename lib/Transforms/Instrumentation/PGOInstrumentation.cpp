@@ -934,6 +934,18 @@ struct UseBBInfo : public BBInfo {
 
 } // end anonymous namespace
 
+struct UniformLocation {
+  Module &M;
+  Function &F;
+  /// The value which should be tested for uniformity
+  Value &V;
+  /// Insert uniform code before this instruction
+  Instruction &I;
+
+  UniformLocation(Module &M, Function &F, Value &V, Instruction &I) :
+    M(M), F(F), V(V), I(I) {}
+};
+
 // Sum up the count values for all the edges.
 static uint64_t sumEdgeCount(const ArrayRef<PGOUseEdge *> Edges) {
   uint64_t Total = 0;
@@ -1540,44 +1552,94 @@ bool PGOInstrumentationAnalysisLegacyPass::runOnModule(Module &M) {
 
 PreservedAnalyses PGOInstrumentationAnalysis::run(Module &M,
                                              ModuleAnalysisManager &AM) {
-  auto &FAM = AM.getResult<FunctionAnalysisManagerModuleProxy>(M).getManager();
-  auto LookupBPI = [&FAM](Function &F) {
-    return &FAM.getResult<BranchProbabilityAnalysis>(F);
-  };
-
-  auto LookupBFI = [&FAM](Function &F) {
-    return &FAM.getResult<BlockFrequencyAnalysis>(F);
-  };
-
   // TODO
   //if (!InstrumentAllFunctions(M, LookupBPI, LookupBFI))
   printf("Unimplemented\n");
   return PreservedAnalyses::all();
 }
 
+static void UniformInstrumentVariable(UniformLocation &l,
+  GlobalVariable *FuncNameVar, uint64_t FuncHash, int i, int NumCounters) {
+  printf("Instrumenting uniform instruction\n");
+  // TODO This does not yet count uniformity
+  Type *I8PtrTy = Type::getInt8PtrTy(l.M.getContext());
+  IRBuilder<> Builder(&l.I);
+  Builder.CreateCall(
+    Intrinsic::getDeclaration(&l.M, Intrinsic::instrprof_increment),
+    {ConstantExpr::getBitCast(FuncNameVar, I8PtrTy),
+     Builder.getInt64(FuncHash), Builder.getInt32(NumCounters),
+     Builder.getInt32(i)});
+}
+
+/// Collect all locations which should be instrumented
+static std::vector<UniformLocation> UniformCollectAllFunctions(Module &M) {
+  std::vector<UniformLocation> locs;
+  for (auto &F : M) {
+    if (F.isDeclaration())
+      continue;
+
+    // Analyze uniformity of every branch
+    for (auto &BB : F) {
+      BranchInst *Term = dyn_cast<BranchInst>(BB.getTerminator());
+      if (!Term || !Term->isConditional()) {
+        continue;
+      }
+      // TODO Check if the value is marked uniform
+      //Term->setMetadata("amdgpu.uniform", MDNode::get(I->getContext(), {}));
+      auto cond = Term->getCondition();
+
+      UniformLocation l(M, F, *cond, *Term);
+      locs.push_back(l);
+    }
+  }
+  return locs;
+}
+
+static bool UniformInstrumentAllFunctions(Module &M) {
+  auto locs = UniformCollectAllFunctions(M);
+  Function *F = nullptr;
+  GlobalVariable *FuncNameVar;
+  for (size_t i = 0; i < locs.size(); i++) {
+    auto &l = locs[i];
+    // Get function name
+    if (&l.F != F) {
+      F = &l.F;
+      std::string FuncName = getPGOFuncName(l.F);
+      FuncNameVar = createPGOFuncNameVar(l.F, FuncName + "-uniform");
+    }
+
+    // TODO
+    uint64_t hash = 0;
+    UniformInstrumentVariable(l, FuncNameVar, hash, i, locs.size());
+  }
+  return !locs.empty();
+}
+
 bool PGOUniformInstrumentationGenLegacyPass::runOnModule(Module &M) {
   if (skipModule(M))
     return false;
 
-  return false;
+  return UniformInstrumentAllFunctions(M);
 }
 
 PreservedAnalyses PGOUniformInstrumentationGen::run(Module &M,
                                              ModuleAnalysisManager &AM) {
-  auto &FAM = AM.getResult<FunctionAnalysisManagerModuleProxy>(M).getManager();
-  return PreservedAnalyses::all();
+  if (!UniformInstrumentAllFunctions(M))
+    return PreservedAnalyses::all();
+
+  return PreservedAnalyses::none();
 }
 
 bool PGOUniformInstrumentationUseLegacyPass::runOnModule(Module &M) {
   if (skipModule(M))
     return false;
 
+  //I->setMetadata("amdgpu.uniform", MDNode::get(I->getContext(), {}));
   return false;
 }
 
 PreservedAnalyses PGOUniformInstrumentationUse::run(Module &M,
                                              ModuleAnalysisManager &AM) {
-  auto &FAM = AM.getResult<FunctionAnalysisManagerModuleProxy>(M).getManager();
   return PreservedAnalyses::all();
 }
 

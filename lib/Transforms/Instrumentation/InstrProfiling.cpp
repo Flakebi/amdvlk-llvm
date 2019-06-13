@@ -623,7 +623,7 @@ void InstrProfiling::lowerIncrement(InstrProfIncrementInst *Inc) {
       Value *ReadR = Intrinsic::getDeclaration(
           M, Intrinsic::read_register, Int64Ty);
       Value *WriteR = Intrinsic::getDeclaration(
-          M, Intrinsic::amdgcn_init_exec, Int64Ty);
+          M, Intrinsic::write_register, Int64Ty);
       Metadata *MDArgs[] = {MDString::get(Ctx, "exec")};
       MDNode *MD = MDNode::get(Ctx, MDArgs);
 
@@ -634,22 +634,24 @@ void InstrProfiling::lowerIncrement(InstrProfIncrementInst *Inc) {
       // Split after we read the register
       auto it = ReadCall->getIterator();
       it++;
-      auto* newBB = Inc->getParent()->splitBasicBlock(it);
-      IRBuilder<> Builder2(newBB);
+      // Splitting has no benefit, it will be merged together later anyway
+      // but we would destroy the structure from structurize cfg.
+      //auto* newBB = Inc->getParent()->splitBasicBlock(it);
+      //IRBuilder<> Builder2(&*newBB->getFirstInsertionPt());
       ConstantInt *one = ConstantInt::get(Int64Ty, 1);
-      CallInst *NewCall = Builder2.CreateCall(WriteR, one);
+      CallInst *NewCall = Builder.CreateCall(WriteR, {MetadataAsValue::get(Ctx, MD), one});
       NewCall->addAttribute(AttributeList::FunctionIndex,
                             Attribute::Convergent);
 
-      auto AtomicOp = Builder2.CreateAtomicRMW(AtomicRMWInst::Add, Addr, Inc->getStep(),
+      auto AtomicOp = Builder.CreateAtomicRMW(AtomicRMWInst::Add, Addr, Inc->getStep(),
         AtomicOrdering::Monotonic);
 
       // Split after we made the atomic operation
       it = AtomicOp->getIterator();
       it++;
-      newBB = Inc->getParent()->splitBasicBlock(it);
-      IRBuilder<> Builder3(newBB);
-      NewCall = Builder3.CreateCall(WriteR, ReadCall);
+      //newBB = AtomicOp->getParent()->splitBasicBlock(it);
+      //IRBuilder<> Builder3(&*newBB->getFirstInsertionPt());
+      NewCall = Builder.CreateCall(WriteR, {MetadataAsValue::get(Ctx, MD), ReadCall});
       NewCall->addAttribute(AttributeList::FunctionIndex,
                             Attribute::Convergent);
     } else {

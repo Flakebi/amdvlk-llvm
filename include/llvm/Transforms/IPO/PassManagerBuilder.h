@@ -161,6 +161,8 @@ public:
 
   /// Enable profile instrumentation pass.
   bool EnablePGOInstrGen;
+  /// Enable uniformity profiling passes. This needs PGO generation or usage.
+  bool EnablePGOUniform;
   /// Profile data file name that the instrumentation will be written to.
   std::string PGOInstrGen;
   /// Path of the profile data file.
