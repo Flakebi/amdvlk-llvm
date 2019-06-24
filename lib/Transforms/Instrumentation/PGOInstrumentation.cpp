@@ -1561,14 +1561,27 @@ PreservedAnalyses PGOInstrumentationAnalysis::run(Module &M,
 static void UniformInstrumentVariable(UniformLocation &l,
   GlobalVariable *FuncNameVar, uint64_t FuncHash, int i, int NumCounters) {
   printf("Instrumenting uniform instruction\n");
-  // TODO This does not yet count uniformity
   Type *I8PtrTy = Type::getInt8PtrTy(l.M.getContext());
-  IRBuilder<> Builder(&l.I);
-  Builder.CreateCall(
-    Intrinsic::getDeclaration(&l.M, Intrinsic::instrprof_increment),
+  IRBuilder<> B(&l.I);
+
+  // We have always i1 values
+  // TODO Assert type
+  Value *Val = B.CreateZExt(&l.V, B.getInt32Ty());
+  CallInst *FirstLane =
+      B.CreateIntrinsic(Intrinsic::amdgcn_readfirstlane, {}, Val);
+  // Compare Val with FirstLane
+  Value *FirstLaneVal = B.CreateTrunc(FirstLane, B.getInt1Ty());
+  Value *Cmp = B.CreateICmpNE(&l.V, FirstLaneVal);
+  // Count bits in vcc for per-wave counting
+  //Instruction *Ctpop = B.CreateUnaryIntrinsic(Intrinsic::ctpop, Vcc);
+  Value *IncVal = B.CreateZExt(Cmp, B.getInt64Ty());
+
+  // Increment by IncVal
+  B.CreateCall(
+    Intrinsic::getDeclaration(&l.M, Intrinsic::instrprof_increment_step),
     {ConstantExpr::getBitCast(FuncNameVar, I8PtrTy),
-     Builder.getInt64(FuncHash), Builder.getInt32(NumCounters),
-     Builder.getInt32(i)});
+     B.getInt64(FuncHash), B.getInt32(NumCounters),
+     B.getInt32(i), IncVal});
 }
 
 /// Collect all locations which should be instrumented
@@ -1584,9 +1597,10 @@ static std::vector<UniformLocation> UniformCollectAllFunctions(Module &M) {
       if (!Term || !Term->isConditional()) {
         continue;
       }
-      // TODO Check if the value is marked uniform
-      //Term->setMetadata("amdgpu.uniform", MDNode::get(I->getContext(), {}));
       auto cond = Term->getCondition();
+      // TODO Check if the value is marked uniform
+      //LegacyDivergenceAnalysis *DA;
+      //DA->isDivergent(cond)
 
       UniformLocation l(M, F, *cond, *Term);
       locs.push_back(l);
