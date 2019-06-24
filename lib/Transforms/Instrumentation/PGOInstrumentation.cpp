@@ -111,6 +111,7 @@
 #include <cassert>
 #include <cstdint>
 #include <memory>
+#include <mutex>
 #include <numeric>
 #include <string>
 #include <unordered_map>
@@ -1520,6 +1521,9 @@ bool PGOInstrumentationAnalysisLegacyPass::runOnModule(Module &M) {
   if (skipModule(M))
     return false;
 
+  static std::mutex file_lock;
+  std::lock_guard<std::mutex> file_guard(file_lock);
+
   std::ofstream outfile;
   outfile.open("/tmp/mydriveranalysis.txt", std::ios_base::app);
   outfile << "Compiling\n";
@@ -1713,9 +1717,10 @@ static bool annotateAllFunctions(
   }
   // TODO: might need to change the warning once the clang option is finalized.
   if (!PGOReader->isIRLevelProfile()) {
-    Ctx.diagnose(DiagnosticInfoPGOProfile(
-        ProfileFileName.data(), "Not an IR level instrumentation profile"));
-    return false;
+    printf("Not an IR level instrumentation profile\n");
+    //Ctx.diagnose(DiagnosticInfoPGOProfile(
+        //ProfileFileName.data(), "Not an IR level instrumentation profile"));
+    //return false;
   }
 
   std::unordered_multimap<Comdat *, GlobalValue *> ComdatMembers;
