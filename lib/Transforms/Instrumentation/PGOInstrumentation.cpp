@@ -1563,24 +1563,25 @@ PreservedAnalyses PGOInstrumentationAnalysis::run(Module &M,
 }
 
 static void UniformInstrumentVariable(UniformLocation &l,
-  GlobalVariable *FuncNameVar, uint64_t FuncHash, int i, int NumCounters) {
+  GlobalVariable *FuncNameVar, uint64_t FuncHash, int i, int NumCounters, bool late) {
   printf("Instrumenting uniform instruction\n");
   Type *I8PtrTy = Type::getInt8PtrTy(l.M.getContext());
   IRBuilder<> B(&l.I);
 
   // We have always i1 values
-  // TODO Assert type
+  assert(l.V.getType() == B.getInt1Ty() && "Uniform analysis is only implemented for i1");
   Value *Val = B.CreateZExt(&l.V, B.getInt32Ty());
   CallInst *FirstLane =
       B.CreateIntrinsic(Intrinsic::amdgcn_readfirstlane, {}, Val);
   // Compare Val with FirstLane
-  Value *FirstLaneVal = B.CreateTrunc(FirstLane, B.getInt1Ty());
-  Value *Cmp = B.CreateICmpNE(&l.V, FirstLaneVal);
-  // Count bits in vcc for per-wave counting
-  //Instruction *Ctpop = B.CreateUnaryIntrinsic(Intrinsic::ctpop, Vcc);
-  Value *IncVal = B.CreateZExt(Cmp, B.getInt64Ty());
+  // Contains 1s for diverging lanes
+  CallInst *Cmp = B.CreateIntrinsic(Intrinsic::amdgcn_icmp, {B.getInt32Ty()},
+                    {Val, FirstLane, B.getInt32(CmpInst::ICMP_NE)});
+  // 1 if the value is not uniform
+  Value *Uniform = B.CreateICmpNE(Cmp, B.getInt64(0));
+  Value *IncVal = B.CreateZExt(Uniform, B.getInt64Ty());
 
-  // Increment by IncVal
+  // Increment if not uniform
   B.CreateCall(
     Intrinsic::getDeclaration(&l.M, Intrinsic::instrprof_increment_step),
     {ConstantExpr::getBitCast(FuncNameVar, I8PtrTy),
@@ -1589,7 +1590,8 @@ static void UniformInstrumentVariable(UniformLocation &l,
 }
 
 /// Collect all locations which should be instrumented
-static std::vector<UniformLocation> UniformCollectAllFunctions(Module &M) {
+static std::vector<UniformLocation> UniformCollectAllFunctions(Module &M, bool *late) {
+  *late = false;
   std::vector<UniformLocation> locs;
   for (auto &F : M) {
     if (F.isDeclaration())
@@ -1597,38 +1599,67 @@ static std::vector<UniformLocation> UniformCollectAllFunctions(Module &M) {
 
     // Analyze uniformity of every branch
     for (auto &BB : F) {
-      BranchInst *Term = dyn_cast<BranchInst>(BB.getTerminator());
-      if (!Term || !Term->isConditional()) {
-        continue;
-      }
-      auto cond = Term->getCondition();
-      // TODO Check if the value is marked uniform
-      //LegacyDivergenceAnalysis *DA;
-      //DA->isDivergent(cond)
+      // Try to find if intrinsics
+      for (auto &I : BB) {
+        CallInst *Call = dyn_cast<CallInst>(&I);
+        if (Call) {
+          IntrinsicInst *Intr = dyn_cast<IntrinsicInst>(Call);
+          if (Intr && Intr->getIntrinsicID() == Intrinsic::amdgcn_if) {
+            if (!*late) {
+              // Remove all normal conditions and search if intrinsics instead
+              locs.clear();
+              *late = true;
+            }
 
-      UniformLocation l(M, F, *cond, *Term);
-      locs.push_back(l);
+            auto *cond = Call->getArgOperand(0);
+            // TODO Check if the value is marked uniform
+            //LegacyDivergenceAnalysis *DA;
+            //DA->isDivergent(cond)
+
+            UniformLocation l(M, F, *cond, *Call);
+            locs.push_back(l);
+          }
+        }
+      }
+
+      if (!*late) {
+        BranchInst *Term = dyn_cast<BranchInst>(BB.getTerminator());
+        if (!Term || !Term->isConditional()) {
+          continue;
+        }
+        auto *cond = Term->getCondition();
+        // TODO Check if the value is marked uniform
+        //LegacyDivergenceAnalysis *DA;
+        //DA->isDivergent(cond)
+
+        UniformLocation l(M, F, *cond, *Term);
+        locs.push_back(l);
+      }
     }
   }
   return locs;
 }
 
 static bool UniformInstrumentAllFunctions(Module &M) {
-  auto locs = UniformCollectAllFunctions(M);
+  bool late = false;
+  auto locs = UniformCollectAllFunctions(M, &late);
   Function *F = nullptr;
   GlobalVariable *FuncNameVar;
-  for (size_t i = 0; i < locs.size(); i++) {
-    auto &l = locs[i];
+  size_t i;
+  for (auto &l : locs) {
     // Get function name
     if (&l.F != F) {
       F = &l.F;
       std::string FuncName = getPGOFuncName(l.F);
       FuncNameVar = createPGOFuncNameVar(l.F, FuncName + "-uniform");
+      i = 0;
+    } else {
+      i++;
     }
 
     // TODO
     uint64_t hash = 0;
-    UniformInstrumentVariable(l, FuncNameVar, hash, i, locs.size());
+    UniformInstrumentVariable(l, FuncNameVar, hash, i, locs.size(), late);
   }
   return !locs.empty();
 }
@@ -1648,12 +1679,85 @@ PreservedAnalyses PGOUniformInstrumentationGen::run(Module &M,
   return PreservedAnalyses::none();
 }
 
+static bool annotateUniformAllFunctions(Module &M, StringRef ProfileFileName) {
+  LLVM_DEBUG(dbgs() << "Read in uniform profile counters: ");
+  auto &Ctx = M.getContext();
+  // Read the counter array from file.
+  auto ReaderOrErr =
+      IndexedInstrProfReader::create(ProfileFileName, "");
+  if (Error E = ReaderOrErr.takeError()) {
+    handleAllErrors(std::move(E), [&](const ErrorInfoBase &EI) {
+      Ctx.diagnose(
+          DiagnosticInfoPGOProfile(ProfileFileName.data(), EI.message()));
+    });
+    return false;
+  }
+
+  std::unique_ptr<IndexedInstrProfReader> PGOReader =
+      std::move(ReaderOrErr.get());
+  if (!PGOReader) {
+    Ctx.diagnose(DiagnosticInfoPGOProfile(ProfileFileName.data(),
+                                          StringRef("Cannot get PGOReader")));
+    return false;
+  }
+  // TODO: might need to change the warning once the clang option is finalized.
+  if (!PGOReader->isIRLevelProfile()) {
+    printf("Not an IR level instrumentation profile\n");
+    //Ctx.diagnose(DiagnosticInfoPGOProfile(
+        //ProfileFileName.data(), "Not an IR level instrumentation profile"));
+    //return false;
+  }
+
+  bool late = false;
+  auto locs = UniformCollectAllFunctions(M, &late);
+
+  bool changed = false;
+  Function *F = nullptr;
+  std::vector<uint64_t> CountFromProfile;
+  size_t i;
+  for (auto &l : locs) {
+    if (&l.F != F) {
+      F = &l.F;
+      i = 0;
+      std::string FuncName = getPGOFuncName(l.F);
+
+      // TODO
+      uint64_t hash = 0;
+      Expected<InstrProfRecord> Result =
+          PGOReader->getInstrProfRecord(FuncName + "-uniform", hash);
+      if (Error E = Result.takeError()) {
+        handleAllErrors(std::move(E), [&](const InstrProfError &IPE) {
+          std::string Msg = IPE.message() + std::string(" ") + FuncName;
+          Ctx.diagnose(
+              DiagnosticInfoPGOProfile(M.getName().data(), Msg, DS_Warning));
+        });
+        return false;
+      }
+      CountFromProfile = Result.get().Counts;
+    } else {
+      i++;
+    }
+
+    if (CountFromProfile[i] == 0) {
+      // Value is uniform
+      l.I.setMetadata("amdgpu.uniform", MDNode::get(l.I.getContext(), {}));
+      printf("Marking variable as uniform\n");
+      changed = true;
+    }
+  }
+
+  if (changed) {
+    // TODO Run divergence analysis after this and do not mark these values as diverging
+  }
+
+  return changed;
+}
+
 bool PGOUniformInstrumentationUseLegacyPass::runOnModule(Module &M) {
   if (skipModule(M))
     return false;
 
-  //I->setMetadata("amdgpu.uniform", MDNode::get(I->getContext(), {}));
-  return false;
+  return annotateUniformAllFunctions(M, Filename);
 }
 
 PreservedAnalyses PGOUniformInstrumentationUse::run(Module &M,

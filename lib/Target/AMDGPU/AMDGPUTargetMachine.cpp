@@ -830,7 +830,8 @@ bool GCNPassConfig::addPreISel() {
         // Use file
         // The filename gets converted to a std::string so we can use the
         // stack allocated variable.
-        addPass(createPGOInstrumentationUseLegacyPass(profileUseFilenameString));
+        // TODO
+        //addPass(createPGOInstrumentationUseLegacyPass(profileUseFilenameString));
         if (pgoOpts.Analysis)
           addPass(createPGOInstrumentationAnalysisLegacyPass());
         addPass(createControlHeightReductionLegacyPass());
