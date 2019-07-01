@@ -306,7 +306,7 @@ void PassManagerBuilder::addPGOInstrPasses(legacy::PassManagerBase &MPM) {
     MPM.add(createInstrProfilingLegacyPass(PGOOptions));
   }
   if (!PGOInstrUse.empty()) {
-    MPM.add(createPGOInstrumentationUseLegacyPass(PGOInstrUse));
+    //MPM.add(createPGOInstrumentationUseLegacyPass(PGOInstrUse));
     if (EnablePGOUniform)
       MPM.add(createPGOUniformInstrumentationUseLegacyPass(PGOInstrUse));
   }

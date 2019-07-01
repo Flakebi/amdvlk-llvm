@@ -1739,15 +1739,12 @@ static bool annotateUniformAllFunctions(Module &M, StringRef ProfileFileName) {
     }
 
     if (CountFromProfile[i] == 0) {
-      // Value is uniform
-      l.I.setMetadata("amdgpu.uniform", MDNode::get(l.I.getContext(), {}));
-      printf("Marking variable as uniform\n");
+      // The resulting value is uniform (the computation input may not be
+      // uniform, but the output is so it does not matter which SIMD-lane
+      // executes it).
+      l.I.setMetadata("amdgpu.dynamic-uniform", MDNode::get(l.I.getContext(), {}));
       changed = true;
     }
-  }
-
-  if (changed) {
-    // TODO Run divergence analysis after this and do not mark these values as diverging
   }
 
   return changed;

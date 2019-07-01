@@ -838,6 +838,10 @@ bool GCNPassConfig::addPreISel() {
 
         if (pgoOpts.Uniform) {
           addPass(createPGOUniformInstrumentationUseLegacyPass(profileUseFilenameString));
+
+          // Annotate new uniform variables, not as effective as doing it early
+          // but better than nothing
+          addPass(createAMDGPUAnnotateUniformValues());
         }
       }
       outfile << "\n";
