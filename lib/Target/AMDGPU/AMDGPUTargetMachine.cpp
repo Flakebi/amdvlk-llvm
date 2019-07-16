@@ -801,13 +801,13 @@ bool GCNPassConfig::addPreISel() {
     if (pgoOpts.Late)
     {
       // Add PGO passes after structurizing the CFG
-      std::ofstream outfile;
+      /*std::ofstream outfile;
       outfile.open("/tmp/mydriveroutput.txt", std::ios_base::app);
-      outfile << "Compiling ";
+      outfile << "Compiling ";*/
 
       if (pgoOpts.Gen())
       {
-        outfile << pgoOpts.FileGen;
+        //outfile << pgoOpts.FileGen;
         InstrProfOptions PGOOptions;
         PGOOptions.InstrProfileOutput = pgoOpts.FileGen;
         PGOOptions.Atomic = true;
@@ -826,14 +826,11 @@ bool GCNPassConfig::addPreISel() {
 
       if (!profileUseFilenameString.empty())
       {
-        outfile << " " << profileUseFilenameString;
+        //outfile << " " << profileUseFilenameString;
         // Use file
         // The filename gets converted to a std::string so we can use the
         // stack allocated variable.
-        // TODO
-        //addPass(createPGOInstrumentationUseLegacyPass(profileUseFilenameString));
-        if (pgoOpts.Analysis)
-          addPass(createPGOInstrumentationAnalysisLegacyPass());
+        addPass(createPGOInstrumentationUseLegacyPass(profileUseFilenameString));
         addPass(createControlHeightReductionLegacyPass());
 
         if (pgoOpts.Uniform) {
@@ -843,8 +840,16 @@ bool GCNPassConfig::addPreISel() {
           // but better than nothing
           addPass(createAMDGPUAnnotateUniformValues());
         }
+
+        if (pgoOpts.Analysis)
+          addPass(createPGOInstrumentationAnalysisLegacyPass());
       }
-      outfile << "\n";
+      //outfile << "\n";
+
+    /*addPass(createPrinterPass(outs(),
+                "===============================================================================\n"
+                "// BEFORE PGO\n"));*/
+      addPass(createPGOUseTestLegacyPass());
     }
 
     /*addPass(createPrinterPass(outs(),

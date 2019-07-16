@@ -448,7 +448,7 @@ static bool shouldApply(Function &F, ProfileSummaryInfo& PSI) {
     return CHRFunctions.count(F.getName());
   }
 
-  assert(PSI.hasProfileSummary() && "Empty PSI?");
+  //assert(PSI.hasProfileSummary() && "Empty PSI?");
   return PSI.isFunctionEntryHot(&F);
 }
 
