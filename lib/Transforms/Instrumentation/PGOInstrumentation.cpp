@@ -66,6 +66,7 @@
 #include "llvm/Analysis/LegacyDivergenceAnalysis.h"
 #include "llvm/Analysis/LoopInfo.h"
 #include "llvm/Analysis/OptimizationRemarkEmitter.h"
+#include "llvm/Analysis/TargetTransformInfo.h"
 #include "llvm/IR/Attributes.h"
 #include "llvm/IR/BasicBlock.h"
 #include "llvm/IR/CFG.h"
@@ -442,6 +443,7 @@ private:
 
   void getAnalysisUsage(AnalysisUsage &AU) const override {
     AU.addRequired<BlockFrequencyInfoWrapperPass>();
+    AU.addRequired<TargetTransformInfoWrapperPass>();
     AU.addRequired<LegacyDivergenceAnalysis>();
   }
 };
@@ -481,6 +483,7 @@ private:
 
   void getAnalysisUsage(AnalysisUsage &AU) const override {
     AU.addRequired<BlockFrequencyInfoWrapperPass>();
+    AU.addRequired<TargetTransformInfoWrapperPass>();
     AU.addRequired<LegacyDivergenceAnalysis>();
   }
 };
@@ -504,6 +507,7 @@ private:
 
   void getAnalysisUsage(AnalysisUsage &AU) const override {
     AU.addRequired<BlockFrequencyInfoWrapperPass>();
+    AU.addRequired<TargetTransformInfoWrapperPass>();
     AU.addRequired<LegacyDivergenceAnalysis>();
   }
 };
@@ -529,6 +533,7 @@ INITIALIZE_PASS_BEGIN(PGOInstrumentationAnalysisLegacyPass, "pgo-instr-ana",
                       "PGO instrumentation.", false, false)
 INITIALIZE_PASS_DEPENDENCY(BlockFrequencyInfoWrapperPass)
 INITIALIZE_PASS_DEPENDENCY(BranchProbabilityInfoWrapperPass)
+INITIALIZE_PASS_DEPENDENCY(TargetTransformInfoWrapperPass)
 INITIALIZE_PASS_DEPENDENCY(LegacyDivergenceAnalysis)
 INITIALIZE_PASS_END(PGOInstrumentationAnalysisLegacyPass, "pgo-instr-ana",
                     "PGO instrumentation.", false, false)
@@ -556,6 +561,7 @@ INITIALIZE_PASS_BEGIN(PGOUniformInstrumentationGenLegacyPass, "pgo-instr-uniform
                       "PGO instrumentation.", false, false)
 INITIALIZE_PASS_DEPENDENCY(BlockFrequencyInfoWrapperPass)
 INITIALIZE_PASS_DEPENDENCY(BranchProbabilityInfoWrapperPass)
+INITIALIZE_PASS_DEPENDENCY(TargetTransformInfoWrapperPass)
 INITIALIZE_PASS_DEPENDENCY(LegacyDivergenceAnalysis)
 INITIALIZE_PASS_END(PGOUniformInstrumentationGenLegacyPass, "pgo-instr-uniform-gen",
                     "PGO instrumentation.", false, false)
@@ -570,6 +576,7 @@ INITIALIZE_PASS_BEGIN(PGOUniformInstrumentationUseLegacyPass, "pgo-instr-uniform
                       "PGO instrumentation.", false, false)
 INITIALIZE_PASS_DEPENDENCY(BlockFrequencyInfoWrapperPass)
 INITIALIZE_PASS_DEPENDENCY(BranchProbabilityInfoWrapperPass)
+INITIALIZE_PASS_DEPENDENCY(TargetTransformInfoWrapperPass)
 INITIALIZE_PASS_DEPENDENCY(LegacyDivergenceAnalysis)
 INITIALIZE_PASS_END(PGOUniformInstrumentationUseLegacyPass, "pgo-instr-uniform-use",
                     "PGO instrumentation.", false, false)
@@ -1596,8 +1603,10 @@ static std::vector<UniformLocation> UniformCollectAllFunctions(Module &M, functi
         auto *cond = Term->getCondition();
         // Check if the value is marked uniform
         if (DA && !DA->isDivergent(cond)) {
+          printf("Branch is not divergent\n");
           continue;
         }
+        printf("Branch is divergent\n");
 
         UniformLocation l(M, F, *cond, *Term);
         locs.push_back(l);
@@ -1957,6 +1966,9 @@ static bool annotateUniformAllFunctions(Module &M, function_ref<LegacyDivergence
       // uniform, but the output is, so it does not matter which SIMD-lane
       // executes it).
       l.I.setMetadata("amdgpu.dynamic-uniform", MDNode::get(l.I.getContext(), {}));
+      dbgs() << "Mark as uniform: ";
+      l.I.print(dbgs());
+      dbgs() << "\n";
       changed = true;
     }
   }
