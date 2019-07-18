@@ -427,11 +427,11 @@ private:
   }
 };
 
-class PGOInstrumentationAnalysisLegacyPass : public ModulePass {
+class PGOInstrumentationAnalysisLegacyPass : public FunctionPass {
 public:
   static char ID;
 
-  PGOInstrumentationAnalysisLegacyPass() : ModulePass(ID) {
+  PGOInstrumentationAnalysisLegacyPass() : FunctionPass(ID) {
     initializePGOInstrumentationAnalysisLegacyPassPass(
         *PassRegistry::getPassRegistry());
   }
@@ -439,7 +439,7 @@ public:
   StringRef getPassName() const override { return "PGOInstrumentationAnalysisPass"; }
 
 private:
-  bool runOnModule(Module &M) override;
+  bool runOnFunction(Function &F) override;
 
   void getAnalysisUsage(AnalysisUsage &AU) const override {
     AU.addRequired<BlockFrequencyInfoWrapperPass>();
@@ -467,11 +467,11 @@ private:
   }
 };
 
-class PGOUniformInstrumentationGenLegacyPass : public ModulePass {
+class PGOUniformInstrumentationGenLegacyPass : public FunctionPass {
 public:
   static char ID;
 
-  PGOUniformInstrumentationGenLegacyPass() : ModulePass(ID) {
+  PGOUniformInstrumentationGenLegacyPass() : FunctionPass(ID) {
     initializePGOUniformInstrumentationGenLegacyPassPass(
         *PassRegistry::getPassRegistry());
   }
@@ -479,7 +479,7 @@ public:
   StringRef getPassName() const override { return "PGOUniformInstrumentationGenPass"; }
 
 private:
-  bool runOnModule(Module &M) override;
+  bool runOnFunction(Function &F) override;
 
   void getAnalysisUsage(AnalysisUsage &AU) const override {
     AU.addRequired<BlockFrequencyInfoWrapperPass>();
@@ -488,11 +488,11 @@ private:
   }
 };
 
-class PGOUniformInstrumentationUseLegacyPass : public ModulePass {
+class PGOUniformInstrumentationUseLegacyPass : public FunctionPass {
 public:
   static char ID;
 
-  PGOUniformInstrumentationUseLegacyPass(std::string filename = "") : ModulePass(ID) {
+  PGOUniformInstrumentationUseLegacyPass(std::string filename = "") : FunctionPass(ID) {
     Filename = filename;
     initializePGOUniformInstrumentationUseLegacyPassPass(
         *PassRegistry::getPassRegistry());
@@ -503,7 +503,7 @@ public:
 private:
   std::string Filename;
 
-  bool runOnModule(Module &M) override;
+  bool runOnFunction(Function &F) override;
 
   void getAnalysisUsage(AnalysisUsage &AU) const override {
     AU.addRequired<BlockFrequencyInfoWrapperPass>();
@@ -538,7 +538,7 @@ INITIALIZE_PASS_DEPENDENCY(LegacyDivergenceAnalysis)
 INITIALIZE_PASS_END(PGOInstrumentationAnalysisLegacyPass, "pgo-instr-ana",
                     "PGO instrumentation.", false, false)
 
-ModulePass *llvm::createPGOInstrumentationAnalysisLegacyPass() {
+FunctionPass *llvm::createPGOInstrumentationAnalysisLegacyPass() {
   return new PGOInstrumentationAnalysisLegacyPass();
 }
 
@@ -566,7 +566,7 @@ INITIALIZE_PASS_DEPENDENCY(LegacyDivergenceAnalysis)
 INITIALIZE_PASS_END(PGOUniformInstrumentationGenLegacyPass, "pgo-instr-uniform-gen",
                     "PGO instrumentation.", false, false)
 
-ModulePass *llvm::createPGOUniformInstrumentationGenLegacyPass() {
+FunctionPass *llvm::createPGOUniformInstrumentationGenLegacyPass() {
   return new PGOUniformInstrumentationGenLegacyPass();
 }
 
@@ -581,7 +581,7 @@ INITIALIZE_PASS_DEPENDENCY(LegacyDivergenceAnalysis)
 INITIALIZE_PASS_END(PGOUniformInstrumentationUseLegacyPass, "pgo-instr-uniform-use",
                     "PGO instrumentation.", false, false)
 
-ModulePass *llvm::createPGOUniformInstrumentationUseLegacyPass(std::string filename) {
+FunctionPass *llvm::createPGOUniformInstrumentationUseLegacyPass(std::string filename) {
   return new PGOUniformInstrumentationUseLegacyPass(filename);
 }
 
@@ -982,15 +982,14 @@ struct UseBBInfo : public BBInfo {
 } // end anonymous namespace
 
 struct UniformLocation {
-  Module &M;
   Function &F;
   /// The value which should be tested for uniformity
   Value &V;
   /// Insert uniform code before this instruction
   Instruction &I;
 
-  UniformLocation(Module &M, Function &F, Value &V, Instruction &I) :
-    M(M), F(F), V(V), I(I) {}
+  UniformLocation(Function &F, Value &V, Instruction &I) :
+    F(F), V(V), I(I) {}
 };
 
 // Sum up the count values for all the edges.
@@ -1564,88 +1563,73 @@ static bool InstrumentAllFunctions(
 }
 
 /// Collect all locations which should be instrumented
-static std::vector<UniformLocation> UniformCollectAllFunctions(Module &M, function_ref<LegacyDivergenceAnalysis *(Function &)> LookupDA, bool *late) {
+static std::vector<UniformLocation> UniformCollectFunction(Function &F, LegacyDivergenceAnalysis *DA, bool *late) {
   *late = false;
   std::vector<UniformLocation> locs;
-  for (auto &F : M) {
-    if (F.isDeclaration())
-      continue;
-    auto DA = LookupDA(F);
-
-    // Analyze uniformity of every branch
-    for (auto &BB : F) {
-      // Try to find if intrinsics
-      for (auto &I : BB) {
-        CallInst *Call = dyn_cast<CallInst>(&I);
-        if (Call) {
-          IntrinsicInst *Intr = dyn_cast<IntrinsicInst>(Call);
-          if (Intr && Intr->getIntrinsicID() == Intrinsic::amdgcn_if) {
-            if (!*late) {
-              // Remove all normal conditions and search if intrinsics instead
-              locs.clear();
-              *late = true;
-            }
-
-            auto *cond = Call->getArgOperand(0);
-            // Ifs are always non-uniform, otherwise it would be a simple branch
-
-            UniformLocation l(M, F, *cond, *Call);
-            locs.push_back(l);
+  // Analyze uniformity of every branch
+  for (auto &BB : F) {
+    // Try to find if intrinsics
+    for (auto &I : BB) {
+      CallInst *Call = dyn_cast<CallInst>(&I);
+      if (Call) {
+        IntrinsicInst *Intr = dyn_cast<IntrinsicInst>(Call);
+        if (Intr && Intr->getIntrinsicID() == Intrinsic::amdgcn_if) {
+          if (!*late) {
+            // Remove all normal conditions and search if intrinsics instead
+            locs.clear();
+            *late = true;
           }
+
+          auto *cond = Call->getArgOperand(0);
+          // Ifs are always non-uniform, otherwise it would be a simple branch
+
+          UniformLocation l(F, *cond, *Call);
+          locs.push_back(l);
         }
       }
+    }
 
-      if (!*late) {
-        BranchInst *Term = dyn_cast<BranchInst>(BB.getTerminator());
-        if (!Term || !Term->isConditional()) {
-          continue;
-        }
-        auto *cond = Term->getCondition();
-        // Check if the value is marked uniform
-        if (DA && !DA->isDivergent(cond)) {
-          printf("Branch is not divergent\n");
-          continue;
-        }
-        printf("Branch is divergent\n");
-
-        UniformLocation l(M, F, *cond, *Term);
-        locs.push_back(l);
+    if (!*late) {
+      BranchInst *Term = dyn_cast<BranchInst>(BB.getTerminator());
+      if (!Term || !Term->isConditional()) {
+        continue;
       }
+      auto *cond = Term->getCondition();
+      // Check if the value is marked uniform
+      if (DA && !DA->isDivergent(cond)) {
+        printf("Branch is not divergent\n");
+        continue;
+      }
+      printf("Branch is divergent\n");
+
+      UniformLocation l(F, *cond, *Term);
+      locs.push_back(l);
     }
   }
   return locs;
 }
 
-static bool analyze_pgo(Module &M, function_ref<BlockFrequencyInfo *(Function &)> LookupBFI, function_ref<LegacyDivergenceAnalysis *(Function &)> LookupDA) {
+static bool analyze_pgo(Function &F, BlockFrequencyInfo *BFI, LegacyDivergenceAnalysis *DA) {
   static std::mutex file_lock;
   std::lock_guard<std::mutex> file_guard(file_lock);
 
   std::ofstream outfile;
   outfile.open("/tmp/mydriveranalysis.txt", std::ios_base::app);
   outfile << "Compiling\n";
-  for (auto &F : M) {
-    if (F.isDeclaration())
-      continue;
-    auto *BFI = LookupBFI(F);
-    for (auto &BB : F) {
-      Optional<uint64_t> ProfileCount = BFI->getBlockProfileCount(&BB);
-      if (ProfileCount) {
-        if (ProfileCount.getValue() == 0) {
-          outfile << "Count is 0\n";
-        } else {
-          outfile << "Count is " << ProfileCount.getValue() << "\n";
-        }
+  for (auto &BB : F) {
+    Optional<uint64_t> ProfileCount = BFI->getBlockProfileCount(&BB);
+    if (ProfileCount) {
+      if (ProfileCount.getValue() == 0) {
+        outfile << "Count is 0\n";
+      } else {
+        outfile << "Count is " << ProfileCount.getValue() << "\n";
       }
     }
   }
 
   bool late = false;
-  auto LookupNothing = [](Function &F) {
-    return nullptr;
-  };
-  auto locs = UniformCollectAllFunctions(M, LookupNothing, &late);
+  auto locs = UniformCollectFunction(F, nullptr, &late);
   for (auto &l : locs) {
-    auto DA = LookupDA(l.F);
     if (!late && !DA->isDivergent(&l.V)) {
       outfile << "Static uniform\n";
     } else if (l.I.getMetadata("amdgpu.dynamic-uniform")) {
@@ -1657,32 +1641,27 @@ static bool analyze_pgo(Module &M, function_ref<BlockFrequencyInfo *(Function &)
 
   if (late) {
     // Count branches without if, those are static uniform
-    for (auto &F : M) {
-      if (F.isDeclaration())
-        continue;
-
-      // Analyze uniformity of every branch
-      for (auto &BB : F) {
-        bool contains_if = false;
-        // Try to find if intrinsics
-        for (auto &I : BB) {
-          CallInst *Call = dyn_cast<CallInst>(&I);
-          if (Call) {
-            IntrinsicInst *Intr = dyn_cast<IntrinsicInst>(Call);
-            if (Intr && Intr->getIntrinsicID() == Intrinsic::amdgcn_if) {
-              contains_if = true;
-              break;
-            }
+    // Analyze uniformity of every branch
+    for (auto &BB : F) {
+      bool contains_if = false;
+      // Try to find if intrinsics
+      for (auto &I : BB) {
+        CallInst *Call = dyn_cast<CallInst>(&I);
+        if (Call) {
+          IntrinsicInst *Intr = dyn_cast<IntrinsicInst>(Call);
+          if (Intr && Intr->getIntrinsicID() == Intrinsic::amdgcn_if) {
+            contains_if = true;
+            break;
           }
         }
+      }
 
-        if (!contains_if) {
-          BranchInst *Term = dyn_cast<BranchInst>(BB.getTerminator());
-          if (!Term || !Term->isConditional()) {
-            continue;
-          }
-          outfile << "Static uniform\n";
+      if (!contains_if) {
+        BranchInst *Term = dyn_cast<BranchInst>(BB.getTerminator());
+        if (!Term || !Term->isConditional()) {
+          continue;
         }
+        outfile << "Static uniform\n";
       }
     }
   }
@@ -1690,28 +1669,24 @@ static bool analyze_pgo(Module &M, function_ref<BlockFrequencyInfo *(Function &)
   return false;
 }
 
-bool PGOInstrumentationAnalysisLegacyPass::runOnModule(Module &M) {
-  if (skipModule(M))
+bool PGOInstrumentationAnalysisLegacyPass::runOnFunction(Function &F) {
+  if (skipFunction(F))
     return false;
 
-  auto LookupBFI = [this](Function &F) {
-    return &this->getAnalysis<BlockFrequencyInfoWrapperPass>(F).getBFI();
-  };
-  auto LookupDA = [this](Function &F) {
-    return &this->getAnalysis<LegacyDivergenceAnalysis>(F);
-  };
-  return analyze_pgo(M, LookupBFI, LookupDA);
+  auto BFI = &getAnalysis<BlockFrequencyInfoWrapperPass>().getBFI();
+  auto DA = &getAnalysis<LegacyDivergenceAnalysis>();
+  return analyze_pgo(F, BFI, DA);
 }
 
 PreservedAnalyses PGOInstrumentationAnalysis::run(Module &M,
                                              ModuleAnalysisManager &AM) {
   auto &FAM = AM.getResult<FunctionAnalysisManagerModuleProxy>(M).getManager();
-  auto LookupBFI = [&FAM](Function &F) {
-    return &FAM.getResult<BlockFrequencyAnalysis>(F);
-  };
+  for (auto &F: M) {
+    auto BFI = &FAM.getResult<BlockFrequencyAnalysis>(F);
 
-  printf("Ignoring divergence analysis\n");
-  analyze_pgo(M, LookupBFI, nullptr);
+    printf("Ignoring divergence analysis\n");
+    analyze_pgo(F, BFI, nullptr);
+  }
   return PreservedAnalyses::all();
 }
 
@@ -1834,7 +1809,7 @@ PreservedAnalyses PGOUseTest::run(Module &M, ModuleAnalysisManager &AM) {
 static void UniformInstrumentVariable(UniformLocation &l,
   GlobalVariable *FuncNameVar, uint64_t FuncHash, int i, int NumCounters, bool late) {
   printf("Instrumenting uniform instruction\n");
-  Type *I8PtrTy = Type::getInt8PtrTy(l.M.getContext());
+  Type *I8PtrTy = Type::getInt8PtrTy(l.F.getContext());
   IRBuilder<> B(&l.I);
 
   // We have always i1 values
@@ -1852,28 +1827,21 @@ static void UniformInstrumentVariable(UniformLocation &l,
 
   // Increment if not uniform
   B.CreateCall(
-    Intrinsic::getDeclaration(&l.M, Intrinsic::instrprof_increment_step),
+    Intrinsic::getDeclaration(l.F.getParent(), Intrinsic::instrprof_increment_step),
     {ConstantExpr::getBitCast(FuncNameVar, I8PtrTy),
      B.getInt64(FuncHash), B.getInt32(NumCounters),
      B.getInt32(i), IncVal});
 }
 
-static bool UniformInstrumentAllFunctions(Module &M, function_ref<LegacyDivergenceAnalysis *(Function &)> LookupDA) {
+static bool UniformInstrumentFunction(Function &F, LegacyDivergenceAnalysis *DA) {
   bool late = false;
-  auto locs = UniformCollectAllFunctions(M, LookupDA, &late);
-  Function *F = nullptr;
-  GlobalVariable *FuncNameVar;
-  size_t i;
+  auto locs = UniformCollectFunction(F, DA, &late);
+  // Get function name
+  std::string FuncName = getPGOFuncName(F);
+  GlobalVariable *FuncNameVar = createPGOFuncNameVar(F, FuncName + "-uniform");
+  size_t i = 0;
   for (auto &l : locs) {
-    // Get function name
-    if (&l.F != F) {
-      F = &l.F;
-      std::string FuncName = getPGOFuncName(l.F);
-      FuncNameVar = createPGOFuncNameVar(l.F, FuncName + "-uniform");
-      i = 0;
-    } else {
-      i++;
-    }
+    i++;
 
     // TODO
     uint64_t hash = 0;
@@ -1882,28 +1850,29 @@ static bool UniformInstrumentAllFunctions(Module &M, function_ref<LegacyDivergen
   return !locs.empty();
 }
 
-bool PGOUniformInstrumentationGenLegacyPass::runOnModule(Module &M) {
-  if (skipModule(M))
+bool PGOUniformInstrumentationGenLegacyPass::runOnFunction(Function &F) {
+  if (skipFunction(F))
     return false;
 
-  auto LookupDA = [this](Function &F) {
-    return &this->getAnalysis<LegacyDivergenceAnalysis>(F);
-  };
-  return UniformInstrumentAllFunctions(M, LookupDA);
+  return UniformInstrumentFunction(F, &getAnalysis<LegacyDivergenceAnalysis>());
 }
 
 PreservedAnalyses PGOUniformInstrumentationGen::run(Module &M,
                                              ModuleAnalysisManager &AM) {
+  bool result = false;
   printf("Ignoring divergence analysis\n");
-  if (!UniformInstrumentAllFunctions(M, nullptr))
-    return PreservedAnalyses::all();
+  for (auto &F : M) {
+    result |= UniformInstrumentFunction(F, nullptr);
+  }
 
+  if (!result)
+    return PreservedAnalyses::all();
   return PreservedAnalyses::none();
 }
 
-static bool annotateUniformAllFunctions(Module &M, function_ref<LegacyDivergenceAnalysis *(Function &)> LookupDA, StringRef ProfileFileName) {
+static bool annotateUniformFunction(Function &F, LegacyDivergenceAnalysis *DA, StringRef ProfileFileName) {
   LLVM_DEBUG(dbgs() << "Read in uniform profile counters: ");
-  auto &Ctx = M.getContext();
+  auto &Ctx = F.getContext();
   // Read the counter array from file.
   auto ReaderOrErr =
       IndexedInstrProfReader::create(ProfileFileName, "");
@@ -1924,41 +1893,36 @@ static bool annotateUniformAllFunctions(Module &M, function_ref<LegacyDivergence
   }
   // TODO: might need to change the warning once the clang option is finalized.
   if (!PGOReader->isIRLevelProfile()) {
-    //printf("Not an IR level instrumentation profile\n");
     //Ctx.diagnose(DiagnosticInfoPGOProfile(
         //ProfileFileName.data(), "Not an IR level instrumentation profile"));
     //return false;
   }
 
   bool late = false;
-  auto locs = UniformCollectAllFunctions(M, LookupDA, &late);
+  auto locs = UniformCollectFunction(F, DA, &late);
 
   bool changed = false;
-  Function *F = nullptr;
-  std::vector<uint64_t> CountFromProfile;
-  size_t i;
-  for (auto &l : locs) {
-    if (&l.F != F) {
-      F = &l.F;
-      i = 0;
-      std::string FuncName = getPGOFuncName(l.F);
+  size_t i = 0;
+  std::string FuncName = getPGOFuncName(F);
+  // TODO
+  uint64_t hash = 0;
+  Expected<InstrProfRecord> Result =
+      PGOReader->getInstrProfRecord(FuncName + "-uniform", hash);
+  if (Error E = Result.takeError()) {
+    handleAllErrors(std::move(E), [&](const InstrProfError &IPE) {
+      std::string Msg = IPE.message() + std::string(" ") + FuncName;
+      Ctx.diagnose(
+          DiagnosticInfoPGOProfile(F.getParent()->getName().data(), Msg, DS_Warning));
+    });
+    return false;
+  }
 
-      // TODO
-      uint64_t hash = 0;
-      Expected<InstrProfRecord> Result =
-          PGOReader->getInstrProfRecord(FuncName + "-uniform", hash);
-      if (Error E = Result.takeError()) {
-        handleAllErrors(std::move(E), [&](const InstrProfError &IPE) {
-          std::string Msg = IPE.message() + std::string(" ") + FuncName;
-          Ctx.diagnose(
-              DiagnosticInfoPGOProfile(M.getName().data(), Msg, DS_Warning));
-        });
-        return false;
-      }
-      CountFromProfile = Result.get().Counts;
-    } else {
-      i++;
-    }
+  std::vector<uint64_t> CountFromProfile = Result.get().Counts;
+  printf("Got %lu counts\n", CountFromProfile.size());
+
+  printf("Got %lu locs\n", locs.size());
+  for (auto &l : locs) {
+    i++;
 
     printf("Got uniform count %lu\n", CountFromProfile[i]);
     if (CountFromProfile[i] == 0) {
@@ -1970,20 +1934,20 @@ static bool annotateUniformAllFunctions(Module &M, function_ref<LegacyDivergence
       l.I.print(dbgs());
       dbgs() << "\n";
       changed = true;
+    } else {
+      printf("Dont mark as uniform\n");
     }
   }
 
   return changed;
 }
 
-bool PGOUniformInstrumentationUseLegacyPass::runOnModule(Module &M) {
-  if (skipModule(M))
+bool PGOUniformInstrumentationUseLegacyPass::runOnFunction(Function &F) {
+  if (skipFunction(F))
     return false;
 
-  auto LookupDA = [this](Function &F) {
-    return &this->getAnalysis<LegacyDivergenceAnalysis>(F);
-  };
-  return annotateUniformAllFunctions(M, LookupDA, Filename);
+  bool r = annotateUniformFunction(F, &getAnalysis<LegacyDivergenceAnalysis>(), Filename);
+  return r;
 }
 
 PreservedAnalyses PGOUniformInstrumentationUse::run(Module &M,

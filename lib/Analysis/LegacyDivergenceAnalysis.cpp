@@ -256,9 +256,6 @@ void DivergencePropagator::exploreDataDependency(Value *V) {
   for (User *U : V->users()) {
     Instruction *UserInst = cast<Instruction>(U);
     if (!TTI.isAlwaysUniform(U) && !UserInst->getMetadata("amdgpu.dynamic-uniform") && DV.insert(UserInst).second) {
-      dbgs() << "Divergent: ";
-      UserInst->print(dbgs());
-      dbgs() << "\n";
       Worklist.push_back(UserInst);
     }
   }
@@ -317,12 +314,10 @@ bool LegacyDivergenceAnalysis::shouldUseGPUDivergenceAnalysis(
 }
 
 bool LegacyDivergenceAnalysis::runOnFunction(Function &F) {
-  printf("Running divergence analysis 0\n");
   auto *TTIWP = getAnalysisIfAvailable<TargetTransformInfoWrapperPass>();
   if (TTIWP == nullptr)
     return false;
 
-  printf("Running divergence analysis 1\n");
   TargetTransformInfo &TTI = TTIWP->getTTI(F);
   // Fast path: if the target does not have branch divergence, we do not mark
   // any branch as divergent.
@@ -335,7 +330,6 @@ bool LegacyDivergenceAnalysis::runOnFunction(Function &F) {
   auto &DT = getAnalysis<DominatorTreeWrapperPass>().getDomTree();
   auto &PDT = getAnalysis<PostDominatorTreeWrapperPass>().getPostDomTree();
 
-  printf("Running divergence analysis\n");
   if (shouldUseGPUDivergenceAnalysis(F)) {
     // run the new GPU divergence analysis
     auto &LI = getAnalysis<LoopInfoWrapperPass>().getLoopInfo();
