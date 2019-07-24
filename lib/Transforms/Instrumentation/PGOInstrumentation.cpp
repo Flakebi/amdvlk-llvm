@@ -981,6 +981,15 @@ struct UseBBInfo : public BBInfo {
 
 } // end anonymous namespace
 
+enum class UniformLocationType {
+  // Condition for a branch
+  Condition,
+  // Memory address, which will get loaded
+  Address,
+  // Loaded value from memory
+  LoadValue,
+};
+
 struct UniformLocation {
   Function &F;
   /// The value which should be tested for uniformity
@@ -988,8 +997,10 @@ struct UniformLocation {
   /// Insert uniform code before this instruction
   Instruction &I;
 
-  UniformLocation(Function &F, Value &V, Instruction &I) :
-    F(F), V(V), I(I) {}
+  UniformLocationType Type;
+
+  UniformLocation(UniformLocationType Type, Function &F, Value &V, Instruction &I) :
+    F(F), V(V), I(I), Type(Type) {}
 };
 
 // Sum up the count values for all the edges.
@@ -1583,9 +1594,28 @@ static std::vector<UniformLocation> UniformCollectFunction(Function &F, LegacyDi
           auto *cond = Call->getArgOperand(0);
           // Ifs are always non-uniform, otherwise it would be a simple branch
 
-          UniformLocation l(F, *cond, *Call);
+          UniformLocation l(UniformLocationType::Condition, F, *cond, *Call);
           locs.push_back(l);
+        } else if (Intr && Intr->getIntrinsicID() == Intrinsic::amdgcn_else) {
+          if (!*late) {
+            // Remove all normal conditions and search if intrinsics instead
+            locs.clear();
+            *late = true;
+          }
+
+          continue;
         }
+      }
+
+      // Instrument loads
+      LoadInst *Load = dyn_cast<LoadInst>(&I);
+      if (Load) {
+        Value *Addr = Load->getPointerOperand();
+        UniformLocation l(UniformLocationType::Address, F, *Addr, *Load);
+        locs.push_back(l);
+
+        UniformLocation l2(UniformLocationType::LoadValue, F, *Load, *Load->getNextNonDebugInstruction());
+        locs.push_back(l2);
       }
     }
 
@@ -1597,12 +1627,10 @@ static std::vector<UniformLocation> UniformCollectFunction(Function &F, LegacyDi
       auto *cond = Term->getCondition();
       // Check if the value is marked uniform
       if (DA && !DA->isDivergent(cond)) {
-        printf("Branch is not divergent\n");
         continue;
       }
-      printf("Branch is divergent\n");
 
-      UniformLocation l(F, *cond, *Term);
+      UniformLocation l(UniformLocationType::Condition, F, *cond, *Term);
       locs.push_back(l);
     }
   }
@@ -1630,6 +1658,21 @@ static bool analyze_pgo(Function &F, BlockFrequencyInfo *BFI, LegacyDivergenceAn
   bool late = false;
   auto locs = UniformCollectFunction(F, nullptr, &late);
   for (auto &l : locs) {
+    switch (l.Type) {
+      case UniformLocationType::Condition:
+        outfile << "Condition: ";
+        break;
+      case UniformLocationType::Address:
+        outfile << "Address: ";
+        break;
+      case UniformLocationType::LoadValue:
+        outfile << "LoadValue: ";
+        break;
+      default:
+        outfile << "Unknown: ";
+        break;
+    }
+
     if (!late && !DA->isDivergent(&l.V)) {
       outfile << "Static uniform\n";
     } else if (l.I.getMetadata("amdgpu.dynamic-uniform")) {
@@ -1652,6 +1695,9 @@ static bool analyze_pgo(Function &F, BlockFrequencyInfo *BFI, LegacyDivergenceAn
           if (Intr && Intr->getIntrinsicID() == Intrinsic::amdgcn_if) {
             contains_if = true;
             break;
+          } else if (Intr && Intr->getIntrinsicID() == Intrinsic::amdgcn_else) {
+            // Not an interesting branch
+            break;
           }
         }
       }
@@ -1661,7 +1707,7 @@ static bool analyze_pgo(Function &F, BlockFrequencyInfo *BFI, LegacyDivergenceAn
         if (!Term || !Term->isConditional()) {
           continue;
         }
-        outfile << "Static uniform\n";
+        outfile << "Condition: Static uniform\n";
       }
     }
   }
@@ -1808,21 +1854,74 @@ PreservedAnalyses PGOUseTest::run(Module &M, ModuleAnalysisManager &AM) {
 
 static void UniformInstrumentVariable(UniformLocation &l,
   GlobalVariable *FuncNameVar, uint64_t FuncHash, int i, int NumCounters, bool late) {
-  printf("Instrumenting uniform instruction\n");
   Type *I8PtrTy = Type::getInt8PtrTy(l.F.getContext());
   IRBuilder<> B(&l.I);
+  // Value in the current lane
+  Value *Val;
+  // Value in the first lane
+  Value *FirstLane;
+  //
+  Value *Uniform = nullptr;
 
-  // We have always i1 values
-  assert(l.V.getType() == B.getInt1Ty() && "Uniform analysis is only implemented for i1");
-  Value *Val = B.CreateZExt(&l.V, B.getInt32Ty());
-  CallInst *FirstLane =
-      B.CreateIntrinsic(Intrinsic::amdgcn_readfirstlane, {}, Val);
-  // Compare Val with FirstLane
-  // Contains 1s for diverging lanes
-  CallInst *Cmp = B.CreateIntrinsic(Intrinsic::amdgcn_icmp, {B.getInt32Ty()},
-                    {Val, FirstLane, B.getInt32(CmpInst::ICMP_NE)});
-  // 1 if the value is not uniform
-  Value *Uniform = B.CreateICmpNE(Cmp, B.getInt64(0));
+  const DataLayout *DL = &l.F.getParent()->getDataLayout();
+  unsigned TyBitWidth = DL->getTypeSizeInBits(l.V.getType());
+  //printf("Bit width: %u\n", TyBitWidth);
+
+  bool can_bitcast = l.V.getType()->canLosslesslyBitCastTo(B.getInt32Ty());
+  if (can_bitcast || TyBitWidth < 32) {
+    if (can_bitcast)
+      Val = B.CreateBitCast(&l.V, B.getInt32Ty());
+    else
+      Val = B.CreateZExt(&l.V, B.getInt32Ty());
+
+    FirstLane = B.CreateIntrinsic(Intrinsic::amdgcn_readfirstlane, {}, Val);
+
+    // Compare Val with FirstLane
+    // Contains 1s for diverging lanes
+    CallInst *Cmp = B.CreateIntrinsic(Intrinsic::amdgcn_icmp, {Val->getType()},
+                      {Val, FirstLane, B.getInt32(CmpInst::ICMP_NE)});
+    // 1 if the value is not uniform
+    Uniform = B.CreateICmpNE(Cmp, B.getInt64(0));
+  } else {
+    // Handle multiples of 32 bit
+    unsigned TyIntWidth = (TyBitWidth + 31) / 32;
+    //dbgs() << "Type: ";
+    //l.V.getType()->print(dbgs());
+    //dbgs() << "\n";
+
+    Type *VecTy = VectorType::get(B.getInt32Ty(), TyIntWidth);
+    //assert(l.V.getType()->canLosslesslyBitCastTo(VecTy) && "Uniform analysis is only implemented for multiples of 32 bit");
+
+    // Cast into vector
+    Value *BitCast;
+    if (l.V.getType()->isPointerTy()) {
+      BitCast = B.CreatePtrToInt(&l.V, B.getIntNTy(TyBitWidth));
+      BitCast = B.CreateBitCast(BitCast, VecTy);
+    } else {
+      BitCast = B.CreateBitCast(&l.V, VecTy);
+    }
+
+    for (size_t i = 0; i < TyIntWidth; i++) {
+      Value *Val = B.CreateExtractElement(BitCast, B.getInt32(i));
+      FirstLane = B.CreateIntrinsic(Intrinsic::amdgcn_readfirstlane, {}, Val);
+
+      // Compare Val with FirstLane
+      // Contains 1s for diverging lanes
+      CallInst *Cmp = B.CreateIntrinsic(Intrinsic::amdgcn_icmp, {Val->getType()},
+                        {Val, FirstLane, B.getInt32(CmpInst::ICMP_NE)});
+      // 1 if the value is not uniform
+      Value *Unif = B.CreateICmpNE(Cmp, B.getInt64(0));
+
+      if (Uniform == nullptr) {
+        Uniform = Unif;
+      } else {
+        // Logical or: If previous ints where not uniform or the current int is
+        // not uniform.
+        Uniform = B.CreateOr(Uniform, Unif);
+      }
+    }
+  }
+
   Value *IncVal = B.CreateZExt(Uniform, B.getInt64Ty());
 
   // Increment if not uniform
@@ -1841,11 +1940,11 @@ static bool UniformInstrumentFunction(Function &F, LegacyDivergenceAnalysis *DA)
   GlobalVariable *FuncNameVar = createPGOFuncNameVar(F, FuncName + "-uniform");
   size_t i = 0;
   for (auto &l : locs) {
-    i++;
-
     // TODO
     uint64_t hash = 0;
     UniformInstrumentVariable(l, FuncNameVar, hash, i, locs.size(), late);
+
+    i++;
   }
   return !locs.empty();
 }
@@ -1918,25 +2017,20 @@ static bool annotateUniformFunction(Function &F, LegacyDivergenceAnalysis *DA, S
   }
 
   std::vector<uint64_t> CountFromProfile = Result.get().Counts;
-  printf("Got %lu counts\n", CountFromProfile.size());
 
-  printf("Got %lu locs\n", locs.size());
   for (auto &l : locs) {
-    i++;
-
-    printf("Got uniform count %lu\n", CountFromProfile[i]);
     if (CountFromProfile[i] == 0) {
       // The resulting value is uniform (the computation input may not be
       // uniform, but the output is, so it does not matter which SIMD-lane
       // executes it).
       l.I.setMetadata("amdgpu.dynamic-uniform", MDNode::get(l.I.getContext(), {}));
-      dbgs() << "Mark as uniform: ";
+      /*dbgs() << "Mark as uniform: ";
       l.I.print(dbgs());
-      dbgs() << "\n";
+      dbgs() << "\n";*/
       changed = true;
-    } else {
-      printf("Dont mark as uniform\n");
     }
+
+    i++;
   }
 
   return changed;
