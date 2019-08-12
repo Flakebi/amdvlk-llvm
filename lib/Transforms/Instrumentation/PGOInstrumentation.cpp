@@ -431,7 +431,8 @@ class PGOInstrumentationAnalysisLegacyPass : public FunctionPass {
 public:
   static char ID;
 
-  PGOInstrumentationAnalysisLegacyPass() : FunctionPass(ID) {
+  PGOInstrumentationAnalysisLegacyPass(std::string filename = "") : FunctionPass(ID) {
+    Filename = filename;
     initializePGOInstrumentationAnalysisLegacyPassPass(
         *PassRegistry::getPassRegistry());
   }
@@ -439,6 +440,8 @@ public:
   StringRef getPassName() const override { return "PGOInstrumentationAnalysisPass"; }
 
 private:
+  std::string Filename;
+
   bool runOnFunction(Function &F) override;
 
   void getAnalysisUsage(AnalysisUsage &AU) const override {
@@ -538,8 +541,8 @@ INITIALIZE_PASS_DEPENDENCY(LegacyDivergenceAnalysis)
 INITIALIZE_PASS_END(PGOInstrumentationAnalysisLegacyPass, "pgo-instr-ana",
                     "PGO instrumentation.", false, false)
 
-FunctionPass *llvm::createPGOInstrumentationAnalysisLegacyPass() {
-  return new PGOInstrumentationAnalysisLegacyPass();
+FunctionPass *llvm::createPGOInstrumentationAnalysisLegacyPass(std::string filename) {
+  return new PGOInstrumentationAnalysisLegacyPass(filename);
 }
 
 char PGOUseTestLegacyPass::ID = 0;
@@ -1637,13 +1640,13 @@ static std::vector<UniformLocation> UniformCollectFunction(Function &F, LegacyDi
   return locs;
 }
 
-static bool analyze_pgo(Function &F, BlockFrequencyInfo *BFI, LegacyDivergenceAnalysis *DA) {
+static bool analyze_pgo(Function &F, BlockFrequencyInfo *BFI, LegacyDivergenceAnalysis *DA, std::string &Filename) {
   static std::mutex file_lock;
   std::lock_guard<std::mutex> file_guard(file_lock);
 
   std::ofstream outfile;
   outfile.open("/tmp/mydriveranalysis.txt", std::ios_base::app);
-  outfile << "Compiling\n";
+  outfile << "Compiling " << Filename << "\n";
   for (auto &BB : F) {
     Optional<uint64_t> ProfileCount = BFI->getBlockProfileCount(&BB);
     if (ProfileCount) {
@@ -1673,12 +1676,29 @@ static bool analyze_pgo(Function &F, BlockFrequencyInfo *BFI, LegacyDivergenceAn
         break;
     }
 
+    auto MD = l.I.getMetadata("amdgpu.dynamic-uniform");
     if (!late && !DA->isDivergent(&l.V)) {
       outfile << "Static uniform\n";
-    } else if (l.I.getMetadata("amdgpu.dynamic-uniform")) {
-      outfile << "Dynamic uniform\n";
+    } else if (MD) {
+      auto &MData = MD->getOperand(0);
+      auto CMData = dyn_cast<ConstantAsMetadata>(MData);
+
+      if (CMData)
+        outfile << "(" << CMData->getValue()->getUniqueInteger().getLimitedValue() << ") Dynamic uniform\n";
+      else
+        outfile << "(unknown) Dynamic uniform\n";
     } else {
-      outfile << "Divergent\n";
+      auto MDD = l.I.getMetadata("amdgpu.divergent");
+      if (MDD) {
+        auto &MData = MDD->getOperand(0);
+        auto CMData = dyn_cast<ConstantAsMetadata>(MData);
+
+        if (CMData)
+          outfile << "(" << CMData->getValue()->getUniqueInteger().getLimitedValue() << ") Divergent\n";
+        else
+          outfile << "(unknown) Divergent\n";
+      } else
+        outfile << "(unknown) Divergent\n";
     }
   }
 
@@ -1721,7 +1741,7 @@ bool PGOInstrumentationAnalysisLegacyPass::runOnFunction(Function &F) {
 
   auto BFI = &getAnalysis<BlockFrequencyInfoWrapperPass>().getBFI();
   auto DA = &getAnalysis<LegacyDivergenceAnalysis>();
-  return analyze_pgo(F, BFI, DA);
+  return analyze_pgo(F, BFI, DA, Filename);
 }
 
 PreservedAnalyses PGOInstrumentationAnalysis::run(Module &M,
@@ -1731,7 +1751,7 @@ PreservedAnalyses PGOInstrumentationAnalysis::run(Module &M,
     auto BFI = &FAM.getResult<BlockFrequencyAnalysis>(F);
 
     printf("Ignoring divergence analysis\n");
-    analyze_pgo(F, BFI, nullptr);
+    analyze_pgo(F, BFI, nullptr, Filename);
   }
   return PreservedAnalyses::all();
 }
@@ -1782,7 +1802,10 @@ static bool use_pgo_test(Module &M, function_ref<BlockFrequencyInfo *(Function &
       // Replace branches in predecessors
       for (BasicBlock *Pred : predecessors(BB)) {
         BranchInst *Term = dyn_cast<BranchInst>(Pred->getTerminator());
-        assert(Term && "Predecessor does not end with a branch instruction?");
+        if (!Term) {
+          // Predecessor does not end with a branch instruction, e.g. in a switch
+          continue;
+        }
 
         // If it is unconditional, it should not be executed.
         if (Term->isConditional()) {
@@ -2023,11 +2046,19 @@ static bool annotateUniformFunction(Function &F, LegacyDivergenceAnalysis *DA, S
       // The resulting value is uniform (the computation input may not be
       // uniform, but the output is, so it does not matter which SIMD-lane
       // executes it).
-      l.I.setMetadata("amdgpu.dynamic-uniform", MDNode::get(l.I.getContext(), {}));
+      auto &Ctx = l.I.getContext();
+      Type *Int64Ty = IntegerType::get(Ctx, 64);
+      Metadata *MD[] = {ConstantAsMetadata::get(ConstantInt::get(Int64Ty, CountFromProfile[i]))};
+      l.I.setMetadata("amdgpu.dynamic-uniform", MDNode::get(Ctx, MD));
       /*dbgs() << "Mark as uniform: ";
       l.I.print(dbgs());
       dbgs() << "\n";*/
       changed = true;
+    } else {
+      auto &Ctx = l.I.getContext();
+      Type *Int64Ty = IntegerType::get(Ctx, 64);
+      Metadata *MD[] = {ConstantAsMetadata::get(ConstantInt::get(Int64Ty, CountFromProfile[i]))};
+      l.I.setMetadata("amdgpu.divergent", MDNode::get(Ctx, MD));
     }
 
     i++;
@@ -2384,6 +2415,10 @@ AMDGPUPGOOptions::AMDGPUPGOOptions() {
 }
 
 PGOUniformInstrumentationUse::PGOUniformInstrumentationUse(std::string file) {
+  Filename = file;
+}
+
+PGOInstrumentationAnalysis::PGOInstrumentationAnalysis(std::string file) {
   Filename = file;
 }
 

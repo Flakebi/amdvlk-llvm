@@ -846,7 +846,7 @@ bool GCNPassConfig::addPreISel() {
         }
 
         if (pgoOpts.Analysis)
-          addPass(createPGOInstrumentationAnalysisLegacyPass());
+          addPass(createPGOInstrumentationAnalysisLegacyPass(profileUseFilenameString));
       }
       //outfile << "\n";
 
