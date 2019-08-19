@@ -802,16 +802,16 @@ bool GCNPassConfig::addPreISel() {
     if (pgoOpts.Late)
     {
       // Add PGO passes after structurizing the CFG
-      /*std::ofstream outfile;
+      std::ofstream outfile;
       outfile.open("/tmp/mydriveroutput.txt", std::ios_base::app);
-      outfile << "Compiling ";*/
+      outfile << "Compiling ";
 
       if (pgoOpts.Gen())
       {
-        //outfile << pgoOpts.FileGen;
+        outfile << pgoOpts.FileGen;
         InstrProfOptions PGOOptions;
         PGOOptions.InstrProfileOutput = pgoOpts.FileGen;
-        PGOOptions.Atomic = true;
+        //PGOOptions.Atomic = true;
         PGOOptions.DoCounterPromotion = true;
 
         addPass(createPGOInstrumentationGenLegacyPass());
@@ -830,7 +830,7 @@ bool GCNPassConfig::addPreISel() {
 
       if (!profileUseFilenameString.empty())
       {
-        //outfile << " " << profileUseFilenameString;
+        outfile << " " << profileUseFilenameString;
         // Use file
         // The filename gets converted to a std::string so we can use the
         // stack allocated variable.
@@ -848,7 +848,7 @@ bool GCNPassConfig::addPreISel() {
         if (pgoOpts.Analysis)
           addPass(createPGOInstrumentationAnalysisLegacyPass(profileUseFilenameString));
       }
-      //outfile << "\n";
+      outfile << "\n";
 
     /*addPass(createPrinterPass(outs(),
                 "===============================================================================\n"

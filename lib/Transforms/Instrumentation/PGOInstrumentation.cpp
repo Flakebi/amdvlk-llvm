@@ -1585,35 +1585,71 @@ static std::vector<UniformLocation> UniformCollectFunction(Function &F, LegacyDi
     // Try to find if intrinsics
     for (auto &I : BB) {
       CallInst *Call = dyn_cast<CallInst>(&I);
-      if (Call) {
-        IntrinsicInst *Intr = dyn_cast<IntrinsicInst>(Call);
-        if (Intr && Intr->getIntrinsicID() == Intrinsic::amdgcn_if) {
-          if (!*late) {
-            // Remove all normal conditions and search if intrinsics instead
-            locs.clear();
-            *late = true;
-          }
-
-          auto *cond = Call->getArgOperand(0);
-          // Ifs are always non-uniform, otherwise it would be a simple branch
-
-          UniformLocation l(UniformLocationType::Condition, F, *cond, *Call);
-          locs.push_back(l);
-        } else if (Intr && Intr->getIntrinsicID() == Intrinsic::amdgcn_else) {
-          if (!*late) {
-            // Remove all normal conditions and search if intrinsics instead
-            locs.clear();
-            *late = true;
-          }
-
-          continue;
+      IntrinsicInst *Intr = dyn_cast<IntrinsicInst>(&I);
+      if (Intr && Intr->getIntrinsicID() == Intrinsic::amdgcn_if) {
+        if (!*late) {
+          // Remove all normal conditions and search if intrinsics instead
+          locs.clear();
+          *late = true;
         }
+
+        auto *cond = Call->getArgOperand(0);
+        // Ifs are always non-uniform, otherwise it would be a simple branch
+
+        UniformLocation l(UniformLocationType::Condition, F, *cond, *Call);
+        locs.push_back(l);
+      } else if (Intr && Intr->getIntrinsicID() == Intrinsic::amdgcn_else) {
+        if (!*late) {
+          // Remove all normal conditions and search if intrinsics instead
+          locs.clear();
+          *late = true;
+        }
+
+        continue;
       }
 
       // Instrument loads
-      LoadInst *Load = dyn_cast<LoadInst>(&I);
+      Instruction *Load = nullptr;
+      Value *Addr = nullptr;
+
+      LoadInst *LoadI = dyn_cast<LoadInst>(&I);
+      if (LoadI) {
+        Load = LoadI;
+        Addr = LoadI->getPointerOperand();
+      } else if (Intr) {
+        auto IntrId = Intr->getIntrinsicID();
+
+        // TODO
+        switch (IntrId) {
+          case Intrinsic::amdgcn_buffer_load:
+          case Intrinsic::amdgcn_buffer_load_ubyte:
+          case Intrinsic::amdgcn_buffer_load_ushort:
+          case Intrinsic::amdgcn_buffer_load_format: {
+          }
+          case Intrinsic::amdgcn_raw_buffer_load:
+          case Intrinsic::amdgcn_raw_buffer_load_format: {
+            //auto Offsets = splitBufferOffsets(Op.getOperand(3), DAG);
+          }
+          case Intrinsic::amdgcn_struct_buffer_load:
+          case Intrinsic::amdgcn_struct_buffer_load_format: {
+            //auto Offsets = splitBufferOffsets(Op.getOperand(4), DAG);
+          }
+          case Intrinsic::amdgcn_tbuffer_load: {
+          }
+          case Intrinsic::amdgcn_raw_tbuffer_load: {
+          }
+          case Intrinsic::amdgcn_struct_tbuffer_load: {
+          }
+
+          default: {
+            /*if (const AMDGPU::ImageDimIntrinsicInfo *ImageDimIntr =
+                    AMDGPU::getImageDimIntrinsicInfo(IntrId)) {
+            }*/
+          }
+        }
+      }
+
       if (Load) {
-        Value *Addr = Load->getPointerOperand();
         UniformLocation l(UniformLocationType::Address, F, *Addr, *Load);
         locs.push_back(l);
 
@@ -1778,6 +1814,8 @@ static bool use_pgo_test(Module &M, function_ref<BlockFrequencyInfo *(Function &
       // Low amount of function calls, in theory this should be zero but because
       // of inaccuracies it is not sometimes.
       uint64_t f_count = EntryCountValue / 100000;
+      // TODO compare with loop header, the limit may be much higher there than
+      // when comparing to the entry block
       for (auto &BB : F) {
         Optional<uint64_t> ProfileCount = BFI->getBlockProfileCount(&BB);
         if (ProfileCount) {
@@ -1794,9 +1832,10 @@ static bool use_pgo_test(Module &M, function_ref<BlockFrequencyInfo *(Function &
     }
 
     printf("Removing %zu basic blocks\n", toRemove.size());
+    return false;
     // Iterate from end to beginning so we do not generate intermediate
     // dangling references
-    for (std::vector<BasicBlock*>::reverse_iterator i = toRemove.rbegin(); i != toRemove.rend(); i++) {
+    /*for (std::vector<BasicBlock*>::reverse_iterator i = toRemove.rbegin(); i != toRemove.rend(); i++) {
       BasicBlock *BB = *i;
 
       // Replace branches in predecessors
@@ -1832,15 +1871,29 @@ static bool use_pgo_test(Module &M, function_ref<BlockFrequencyInfo *(Function &
              PN->removeIncomingValue(i, false);
         }
       }
-    }
+    }*/
+
+    Function *F = nullptr;
+    BasicBlock *FailBB = nullptr;
 
     for (auto BB : toRemove) {
       // Remove all usages of other variables
       for (auto &I : *BB) {
         I.replaceAllUsesWith(UndefValue::get(I.getType()));
       }
-      // TODO This does not work
-      BB->replaceAllUsesWith(&BB->getParent()->getEntryBlock());
+
+      // Create an empty loop (undefined behaviour) because a back-reference to
+      // the entry block is not allowed.
+      if (BB->getParent() != F) {
+        F = BB->getParent();
+        FailBB = BasicBlock::Create(F->getContext(), "", F);
+        IRBuilder<> B(FailBB);
+        B.CreateRetVoid();
+        //B.CreateBr(FailBB);
+      }
+
+      // Replace all references, e.g. in a switch-case
+      BB->replaceAllUsesWith(FailBB);
     }
 
     for (auto BB : toRemove) {

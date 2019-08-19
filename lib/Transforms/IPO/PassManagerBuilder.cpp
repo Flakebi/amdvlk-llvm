@@ -315,7 +315,11 @@ void PassManagerBuilder::addPGOInstrPasses(legacy::PassManagerBase &MPM) {
     if (pgoOpts.Analysis)
       MPM.add(createPGOInstrumentationAnalysisLegacyPass(PGOInstrUse));
 
-    MPM.add(createPGOUseTestLegacyPass());
+    auto pass = createPGOUseTestLegacyPass();
+    MPM.add(pass);
+    /*MPM.add(pass->createPrinterPass(outs(),
+            "===============================================================================\n"
+            "// After remove\n"));*/
   }
   // Indirect call promotion that promotes intra-module targets only.
   // For ThinLTO this is done earlier due to interactions with globalopt
