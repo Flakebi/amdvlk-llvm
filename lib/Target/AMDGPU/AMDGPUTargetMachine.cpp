@@ -811,7 +811,7 @@ bool GCNPassConfig::addPreISel() {
         outfile << pgoOpts.FileGen;
         InstrProfOptions PGOOptions;
         PGOOptions.InstrProfileOutput = pgoOpts.FileGen;
-        //PGOOptions.Atomic = true;
+        PGOOptions.Atomic = true;
         PGOOptions.DoCounterPromotion = true;
 
         addPass(createPGOInstrumentationGenLegacyPass());

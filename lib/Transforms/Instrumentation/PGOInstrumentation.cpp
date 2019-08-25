@@ -1624,17 +1624,19 @@ static std::vector<UniformLocation> UniformCollectFunction(Function &F, LegacyDi
           case Intrinsic::amdgcn_buffer_load:
           case Intrinsic::amdgcn_buffer_load_ubyte:
           case Intrinsic::amdgcn_buffer_load_ushort:
-          case Intrinsic::amdgcn_buffer_load_format: {
+          case Intrinsic::amdgcn_buffer_load_format:
+          case Intrinsic::amdgcn_tbuffer_load: {
+            // Ignore deprecated loads
           }
           case Intrinsic::amdgcn_raw_buffer_load:
           case Intrinsic::amdgcn_raw_buffer_load_format: {
             //auto Offsets = splitBufferOffsets(Op.getOperand(3), DAG);
+                                                           // Only offset
           }
           case Intrinsic::amdgcn_struct_buffer_load:
           case Intrinsic::amdgcn_struct_buffer_load_format: {
+                                                           // Only vindex + offset
             //auto Offsets = splitBufferOffsets(Op.getOperand(4), DAG);
-          }
-          case Intrinsic::amdgcn_tbuffer_load: {
           }
           case Intrinsic::amdgcn_raw_tbuffer_load: {
           }
@@ -1832,7 +1834,6 @@ static bool use_pgo_test(Module &M, function_ref<BlockFrequencyInfo *(Function &
     }
 
     printf("Removing %zu basic blocks\n", toRemove.size());
-    return false;
     // Iterate from end to beginning so we do not generate intermediate
     // dangling references
     /*for (std::vector<BasicBlock*>::reverse_iterator i = toRemove.rbegin(); i != toRemove.rend(); i++) {
@@ -1886,9 +1887,11 @@ static bool use_pgo_test(Module &M, function_ref<BlockFrequencyInfo *(Function &
       // the entry block is not allowed.
       if (BB->getParent() != F) {
         F = BB->getParent();
-        FailBB = BasicBlock::Create(F->getContext(), "", F);
-        IRBuilder<> B(FailBB);
-        B.CreateRetVoid();
+        //FailBB = BasicBlock::Create(F->getContext(), "", F);
+        FailBB = BasicBlock::Create(F->getContext(), "UnreachableBlock", F);
+        new UnreachableInst(F->getContext(), FailBB);
+        //IRBuilder<> B(FailBB);
+        //B.CreateRetVoid();
         //B.CreateBr(FailBB);
       }
 
