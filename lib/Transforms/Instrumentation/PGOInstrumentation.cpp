@@ -1685,10 +1685,21 @@ static bool analyze_pgo(Function &F, BlockFrequencyInfo *BFI, LegacyDivergenceAn
   std::ofstream outfile;
   outfile.open("/tmp/mydriveranalysis.txt", std::ios_base::app);
   outfile << "Compiling " << Filename << "\n";
+
+  auto EntryBlock = &F.getEntryBlock();
+  Optional<uint64_t> EntryCount = BFI->getBlockProfileCount(EntryBlock);
+  uint64_t EntryCountValue = 0;
+  if (EntryCount)
+    EntryCountValue = EntryCount.getValue();
+
+  // Low amount of function calls, in theory this should be zero but because
+  // of inaccuracies it is not sometimes.
+  uint64_t f_count = EntryCountValue / 100000;
+
   for (auto &BB : F) {
     Optional<uint64_t> ProfileCount = BFI->getBlockProfileCount(&BB);
     if (ProfileCount) {
-      if (ProfileCount.getValue() == 0) {
+      if (ProfileCount.getValue() == 0 || ProfileCount.getValue() < f_count) {
         outfile << "Count is 0\n";
       } else {
         outfile << "Count is " << ProfileCount.getValue() << "\n";
@@ -1753,7 +1764,8 @@ static bool analyze_pgo(Function &F, BlockFrequencyInfo *BFI, LegacyDivergenceAn
           if (Intr && Intr->getIntrinsicID() == Intrinsic::amdgcn_if) {
             contains_if = true;
             break;
-          } else if (Intr && Intr->getIntrinsicID() == Intrinsic::amdgcn_else) {
+          } else if (Intr && (Intr->getIntrinsicID() == Intrinsic::amdgcn_else
+            || Intr->getIntrinsicID() == Intrinsic::amdgcn_loop)) {
             // Not an interesting branch
             break;
           }

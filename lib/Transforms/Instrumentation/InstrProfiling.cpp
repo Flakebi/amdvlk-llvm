@@ -470,6 +470,7 @@ bool InstrProfiling::run(Module &M, const TargetLibraryInfo &TLI) {
   NamesSize = 0;
   ProfileDataMap.clear();
   UsedVars.clear();
+  Late = AMDGPUPGOOptions().Late;
   PerWave = AMDGPUPGOOptions().PerWave;
   getMemOPSizeRangeFromOption(MemOPSizeRange, MemOPSizeRangeStart,
                               MemOPSizeRangeLast);
@@ -608,6 +609,93 @@ void InstrProfiling::lowerValueProfileInst(InstrProfValueProfileInst *Ind) {
   Ind->eraseFromParent();
 }
 
+// Needs an IRBuilder where to insert the control flow structure.
+// The type is the return type of the active lanes, it has to be an integer.
+static Value *getSingleWaveExecution(IRBuilder<> &B, Type *Ty, bool AfterStructurize = false, DominatorTree *DT = nullptr) {
+  Function *F = B.GetInsertBlock()->getParent();
+  Instruction &I = *B.GetInsertPoint();
+  bool IsPixelShader = F->getCallingConv() == CallingConv::AMDGPU_PS;
+
+  const DataLayout *DL = &B.GetInsertBlock()->getParent()->getParent()->getDataLayout();
+
+  // If we're optimizing an atomic within a pixel shader, we need to wrap the
+  // entire atomic operation in a helper-lane check. We do not want any helper
+  // lanes that are around only for the purposes of derivatives to take part
+  // in any cross-lane communication, and we use a branch on whether the lane is
+  // live to do this.
+  if (IsPixelShader) {
+    Value *const Cond = B.CreateIntrinsic(Intrinsic::amdgcn_ps_live, {}, {});
+    Instruction *const NonHelperTerminator =
+        SplitBlockAndInsertIfThen(Cond, &I, false, nullptr, DT, nullptr);
+
+    I.moveBefore(NonHelperTerminator);
+    B.SetInsertPoint(&I);
+  }
+
+
+  const unsigned TyBitWidth = DL->getTypeSizeInBits(Ty);
+  Type *const VecTy = VectorType::get(B.getInt32Ty(), 2);
+
+  // We need to know how many lanes are active within the wavefront, and we do
+  // this by doing a ballot of active lanes.
+  CallInst *const Ballot =
+      B.CreateIntrinsic(Intrinsic::amdgcn_icmp, {B.getInt32Ty()},
+                        {B.getInt32(1), B.getInt32(0), B.getInt32(33)});
+
+  // We need to know how many lanes are active within the wavefront that are
+  // below us. If we counted each lane linearly starting from 0, a lane is
+  // below us only if its associated index was less than ours. We do this by
+  // using the mbcnt intrinsic.
+  Value *const BitCast = B.CreateBitCast(Ballot, VecTy);
+  Value *const ExtractLo = B.CreateExtractElement(BitCast, B.getInt32(0));
+  Value *const ExtractHi = B.CreateExtractElement(BitCast, B.getInt32(1));
+  CallInst *const PartialMbcnt = B.CreateIntrinsic(
+      Intrinsic::amdgcn_mbcnt_lo, {}, {ExtractLo, B.getInt32(0)});
+  CallInst *const Mbcnt = B.CreateIntrinsic(Intrinsic::amdgcn_mbcnt_hi, {},
+                                            {ExtractHi, PartialMbcnt});
+
+  Value *const MbcntCast = B.CreateIntCast(Mbcnt, Ty, false);
+
+  // Get the total number of active lanes we have by using popcount.
+  Instruction *const Ctpop = B.CreateUnaryIntrinsic(Intrinsic::ctpop, Ballot);
+  Value *const CtpopCast = B.CreateIntCast(Ctpop, Ty, false);
+
+  // Calculate the new value we will be contributing to the atomic operation
+  // for the entire wavefront.
+  //NewV = B.CreateMul(V, CtpopCast);
+
+  // We only want a single lane to enter our new control flow, and we do this
+  // by checking if there are any active lanes below us. Only one lane will
+  // have 0 active lanes below us, so that will be the only one to progress.
+  Value *Cond = B.CreateICmpEQ(MbcntCast, B.getIntN(TyBitWidth, 0));
+
+  // We need to introduce some new control flow to force a single lane to be
+  // active. We do this by splitting I's basic block at I, and introducing the
+  // new block such that:
+  // entry --> single_lane -\
+  //       \------------------> exit
+  BranchInst *SingleLaneTerminator =
+      static_cast<BranchInst*>(SplitBlockAndInsertIfThen(Cond, &I, false, nullptr, DT, nullptr));
+  BasicBlock *Tail = SingleLaneTerminator->getSuccessor(0);
+
+  if (AfterStructurize) {
+    BranchInst *Term = cast<BranchInst>(Ctpop->getParent()->getTerminator());
+    auto *If = Intrinsic::getDeclaration(F->getParent(), Intrinsic::amdgcn_if);
+    Value *Ret = CallInst::Create(If, Term->getCondition(), "", Term);
+    Term->setCondition(ExtractValueInst::Create(Ret, 0, "", Term));
+    Value *ResetVal = ExtractValueInst::Create(Ret, 1, "", Term);
+
+    auto *EndCf = Intrinsic::getDeclaration(F->getParent(), Intrinsic::amdgcn_end_cf);
+    CallInst::Create(EndCf, ResetVal, "", &*Tail->getFirstInsertionPt());
+  }
+
+  // Move the IR builder into single_lane next.
+  B.SetInsertPoint(SingleLaneTerminator);
+
+  // The number of active lanes
+  return CtpopCast;
+}
+
 void InstrProfiling::lowerIncrement(InstrProfIncrementInst *Inc) {
   GlobalVariable *Counters = getOrCreateRegionCounters(Inc);
 
@@ -617,6 +705,10 @@ void InstrProfiling::lowerIncrement(InstrProfIncrementInst *Inc) {
 
   if (Options.Atomic || AtomicCounterUpdateAll) {
     if (PerWave) {
+//#define OLD_PROFILE_INSTR 1
+#ifdef OLD_PROFILE_INSTR
+      // Can only be used *after* structurization
+      // and may sometimes get wrong results
       LLVMContext &Ctx = M->getContext();
       auto *Int64Ty = Type::getInt64Ty(Ctx);
 
@@ -654,8 +746,26 @@ void InstrProfiling::lowerIncrement(InstrProfIncrementInst *Inc) {
       NewCall = Builder.CreateCall(WriteR, {MetadataAsValue::get(Ctx, MD), ReadCall});
       NewCall->addAttribute(AttributeList::FunctionIndex,
                             Attribute::Convergent);
+#else
+      /*DominatorTreeWrapperPass *const DTW =
+          getAnalysisIfAvailable<DominatorTreeWrapperPass>();
+      DominatorTree *DT = DTW ? &DTW->getDomTree() : nullptr;*/
+      auto Step = Inc->getStep();
+      getSingleWaveExecution(Builder, Step->getType(), Late);
+      Builder.CreateAtomicRMW(AtomicRMWInst::Add, Addr, Step,
+        AtomicOrdering::Monotonic);
+#endif
     } else {
-      Builder.CreateAtomicRMW(AtomicRMWInst::Add, Addr, Inc->getStep(),
+      //Builder.CreateAtomicRMW(AtomicRMWInst::Add, Addr, Inc->getStep(),
+        //AtomicOrdering::Monotonic);
+
+      /*DominatorTreeWrapperPass *const DTW =
+          getAnalysisIfAvailable<DominatorTreeWrapperPass>();
+      DominatorTree *DT = DTW ? &DTW->getDomTree() : nullptr;*/
+      auto Step = Inc->getStep();
+      Value *LaneCount = getSingleWaveExecution(Builder, Step->getType(), Late);
+      auto PerLaneVal = Builder.CreateMul(Step, LaneCount);
+      Builder.CreateAtomicRMW(AtomicRMWInst::Add, Addr, PerLaneVal,
         AtomicOrdering::Monotonic);
     }
   } else {

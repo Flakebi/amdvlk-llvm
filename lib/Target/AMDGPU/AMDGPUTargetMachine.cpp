@@ -811,7 +811,9 @@ bool GCNPassConfig::addPreISel() {
         outfile << pgoOpts.FileGen;
         InstrProfOptions PGOOptions;
         PGOOptions.InstrProfileOutput = pgoOpts.FileGen;
-        PGOOptions.Atomic = true;
+        const char *var = getenv("AMDVLK_PROFILE_NON_ATOMIC");
+        if (!var || var[0] == '0' || var[0] == 0)
+          PGOOptions.Atomic = true;
         PGOOptions.DoCounterPromotion = true;
 
         addPass(createPGOInstrumentationGenLegacyPass());
