@@ -1848,7 +1848,7 @@ static bool use_pgo_test(Module &M, function_ref<BlockFrequencyInfo *(Function &
     printf("Removing %zu basic blocks\n", toRemove.size());
     // Iterate from end to beginning so we do not generate intermediate
     // dangling references
-    /*for (std::vector<BasicBlock*>::reverse_iterator i = toRemove.rbegin(); i != toRemove.rend(); i++) {
+    for (std::vector<BasicBlock*>::reverse_iterator i = toRemove.rbegin(); i != toRemove.rend(); i++) {
       BasicBlock *BB = *i;
 
       // Replace branches in predecessors
@@ -1868,8 +1868,6 @@ static bool use_pgo_test(Module &M, function_ref<BlockFrequencyInfo *(Function &
           } else {
             Term->setSuccessor(1, newSuc);
           }
-        //} else {
-          //Term->setSuccessor(0, &BB->getParent()->getEntryBlock());
         }
       }
 
@@ -1884,7 +1882,7 @@ static bool use_pgo_test(Module &M, function_ref<BlockFrequencyInfo *(Function &
              PN->removeIncomingValue(i, false);
         }
       }
-    }*/
+    }
 
     Function *F = nullptr;
     BasicBlock *FailBB = nullptr;
@@ -1895,16 +1893,13 @@ static bool use_pgo_test(Module &M, function_ref<BlockFrequencyInfo *(Function &
         I.replaceAllUsesWith(UndefValue::get(I.getType()));
       }
 
-      // Create an empty loop (undefined behaviour) because a back-reference to
-      // the entry block is not allowed.
+      // Create an unreachable block because a back-reference to the entry block
+      // is not allowed.
       if (BB->getParent() != F) {
         F = BB->getParent();
         //FailBB = BasicBlock::Create(F->getContext(), "", F);
         FailBB = BasicBlock::Create(F->getContext(), "UnreachableBlock", F);
         new UnreachableInst(F->getContext(), FailBB);
-        //IRBuilder<> B(FailBB);
-        //B.CreateRetVoid();
-        //B.CreateBr(FailBB);
       }
 
       // Replace all references, e.g. in a switch-case

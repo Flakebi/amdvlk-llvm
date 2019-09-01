@@ -856,6 +856,10 @@ bool GCNPassConfig::addPreISel() {
                 "===============================================================================\n"
                 "// BEFORE PGO\n"));*/
       addPass(createPGOUseTestLegacyPass());
+    } else {
+      std::ofstream outfile;
+      outfile.open("/tmp/mydriveroutput.txt", std::ios_base::app);
+      outfile << "Compiling\n";
     }
 
     /*addPass(createPrinterPass(outs(),
